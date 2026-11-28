@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from ruamel.yaml import YAML
 
-from .primitives import chrono
+from .primitives import chrono, names
 
 PACK_DIR = Path(__file__).with_suffix("")
 VERSION = "anthropic-2026-11-15-scripts"
@@ -146,7 +146,7 @@ def status_lines(result: dict) -> list[str]:
 
 
 def example_roots() -> tuple[Path, Path]:
-    claude = Path(os.environ.get("SELF_LEARN_CLAUDE_DIR", str(Path.home() / ".claude")))
+    claude = names.claude_root(use="reference")
     return (Path(os.environ.get("SELF_LEARN_SKILL_REFERENCE_PLUGIN_ROOT", str(claude / "plugins/cache/claude-plugins-official/skill-creator"))),
             Path(os.environ.get("SELF_LEARN_SKILL_REFERENCE_SYNCED_ROOT", str(claude / "skills/synced"))))
 

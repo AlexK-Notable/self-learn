@@ -58,7 +58,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from .compilers import BEGIN_MARKER, END_MARKER, POINTER_BEGIN_MARKER, POINTER_END_MARKER
-from .primitives import chrono, fsops, yamlio
+from .primitives import chrono, fsops, names, yamlio
 
 __all__ = [
     "REGION_KINDS",
@@ -141,7 +141,7 @@ class CompiledRecordError(Exception):
 
 
 def compiled_record_path(home: Path | str, slug: str) -> Path:
-    return Path(home) / "compiled" / f"{slug}.yaml"
+    return names.component_path(Path(home) / "compiled", slug, suffix=".yaml")
 
 
 def _yaml() -> YAML:
@@ -216,7 +216,8 @@ def region_key(host_path: Path | str, target: Path, region: str = "managed") -> 
     region kind that shares its file with another (:data:`_KEY_SUFFIX`).
     One entry identifies (path, region kind), never the path alone."""
     try:
-        base = str(Path(target).resolve().relative_to(Path(host_path).resolve()))
+        resolved_target = Path(target).resolve()
+        base = names.relative_key(Path(host_path).resolve(), resolved_target)
     except ValueError:
         base = str(Path(target).resolve())
     return base + _KEY_SUFFIX.get(region, "")

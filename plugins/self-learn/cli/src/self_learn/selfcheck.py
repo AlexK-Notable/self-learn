@@ -121,6 +121,7 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
+from .primitives import names
 from . import compiled
 from . import domain
 from . import gitops
@@ -344,9 +345,10 @@ def _managed_host_for(
         host = bucket_project_path(bucket.path)
         return Path(host) if host is not None else None
     resolved_user_claude_md = (
-        Path(user_claude_md) if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
+        Path(user_claude_md).expanduser() if user_claude_md is not None
+        else names.user_claude_file(DEFAULT_USER_CLAUDE_MD)
     )
-    return resolved_user_claude_md.expanduser().parent
+    return resolved_user_claude_md.parent
 
 
 def _reference_target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
@@ -423,7 +425,7 @@ def _loaded_surface(home: Path, bucket: Bucket, record: Record) -> list[Path]:
         members.extend(a / "CLAUDE.md" for a in ancestors_of(hosts, Path(host)))
         return members
     if record.scope == "user":
-        return [DEFAULT_USER_CLAUDE_MD.expanduser()]
+        return [names.user_claude_file(DEFAULT_USER_CLAUDE_MD)]
     return []
 
 
@@ -950,7 +952,7 @@ def _check_drift(
                         roots = (host,) if host is not None else None
                     else:
                         roots = _user_reachability_roots(
-                            home, DEFAULT_USER_CLAUDE_MD.expanduser()
+                            home, names.user_claude_file(DEFAULT_USER_CLAUDE_MD)
                         )
                     if roots is not None:
                         stale = [
@@ -1080,8 +1082,7 @@ def _check_markers(
 def claude_runtime_dir() -> Path:
     """Where hook symlinks + settings.json live: ``SELF_LEARN_CLAUDE_DIR``
     (tests) or ``~/.claude``. Read-only for every check here."""
-    env = os.environ.get("SELF_LEARN_CLAUDE_DIR")
-    return Path(env) if env else Path("~/.claude").expanduser()
+    return names.claude_root(use="runtime")
 
 
 def _registered_hook_commands(settings_path: Path) -> tuple[list[str], str | None]:

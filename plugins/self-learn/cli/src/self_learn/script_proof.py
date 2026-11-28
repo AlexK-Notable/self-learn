@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 import re
 
+from .primitives import names
+
 MODEL = "claude-fable-5-2"
 
 
@@ -73,7 +75,7 @@ def verify(home: Path, row: dict, *, notices: list[str] | None = None) -> str | 
             raise ValueError("screen refused: " + "; ".join(checked.rules))
         # Never accept an arbitrary path supplied by an edited index.
         path = source.parent / "review.jsonl"
-        if review.get("transcript") != str(path.relative_to(home)):
+        if review.get("transcript") != names.relative_key(home, path):
             raise ValueError("approval transcript location mismatch")
         _safe(home, path)
         data = path.read_bytes()
@@ -131,7 +133,7 @@ def native_path(home: Path, session: str) -> Path:
     from . import session_copies
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}", session):
         raise ValueError("invalid review session id")
-    slug = re.sub(r"[^A-Za-z0-9]", "-", str(home.resolve()))
+    slug = names.claude_folder_hint(home.resolve(), style="transcript")
     return session_copies.claude_projects_dir().resolve() / slug / (session + ".jsonl")
 
 

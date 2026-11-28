@@ -46,7 +46,7 @@ import re
 import shlex
 from pathlib import Path
 
-from .primitives import procs
+from .primitives import names, procs
 
 __all__ = [
     "GUARDABLE_TOOLS",
@@ -443,7 +443,7 @@ def command_root(claude_dir: Path | None) -> str:
     reading or writing the real ``~/.claude``."""
     if claude_dir is None:
         return "$HOME/.claude"
-    default = Path("~/.claude").expanduser()
+    default = names.claude_root(use="default")
     if claude_dir == default:
         return "$HOME/.claude"
     return str(claude_dir)

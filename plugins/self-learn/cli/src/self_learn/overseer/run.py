@@ -40,7 +40,7 @@ from .. import notices as project_notices
 from .. import report as report_mod
 from ..ledger import discover_buckets, resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS
-from ..primitives import chrono, fsops, procs
+from ..primitives import chrono, fsops, names, procs
 from ..records import Record, build_covered_by
 from . import discovery as discovery_mod, formats, health, notify, population as population_mod, skills as skills_mod
 from . import conversation
@@ -3233,10 +3233,10 @@ def _registered_labels(home: Path, paths: Iterable[str]) -> dict[str, str]:
     for path in paths:
         real = os.path.realpath(path)
         if hosts_mod.is_project_host(hosts, path):
-            out[path] = hosts.project_modes.get(real, "git")
+            out[path] = hosts.project_modes.get(names.registration_key(real), "git")
         elif removed is None:
             out[path] = "unknown"
-        elif real in removed:
+        elif names.registration_key(real) in removed:
             out[path] = "removed"
         else:
             out[path] = "no"
@@ -5448,7 +5448,8 @@ def _receipt_completed(
 
 
 def _manifest_introduction(home: Path, run_id: str) -> str:
-    relpath = execution_evidence.manifest_path(home, run_id).relative_to(home.resolve())
+    manifest = execution_evidence.manifest_path(home, run_id)
+    relpath = names.relative_key(home.resolve(), manifest)
     commits = gitops._git(  # noqa: SLF001 -- first committed recipe boundary
         home, "log", "--diff-filter=A", "--format=%H", "--reverse", "--", str(relpath)
     ).stdout.splitlines()
