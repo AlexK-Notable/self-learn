@@ -138,6 +138,6 @@ def _send_windows(line: str) -> None:
         launcher, title=WINDOWS_TITLE, body=line, url=notify_desktop.ui_url(POPUP_PAGE)
     )
     try:
-        procs.run_bounded(argv, timeout=notify_desktop.CALLER_TIMEOUT_SECONDS)
+        procs.run_bounded(argv, timeout=60)  # BREAK B11
     except Exception as exc:
         worker.log(f"notify: the Windows notification helper failed ({type(exc).__name__})")
