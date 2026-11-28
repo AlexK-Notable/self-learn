@@ -926,7 +926,7 @@ from .procs import STOP_EVENT_ENV, DetachedChild  # noqa: E402
 #: makes every console program it starts (git, python) open a new console,
 #: which on a desktop is a window (measured on the runner: such a grandchild
 #: shares no console with its parent).
-_DETACHED_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+_DETACHED_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
 #: Write access that only appends: every write lands at the end of the file,
 #: whatever any writer's file pointer says, so concurrent runs never overwrite
 #: each other's lines.
@@ -940,10 +940,7 @@ def _program(argv, cwd, env):
     executable = _executable(argv[0], cwd, env)
     if executable is None:
         raise ctypes.WinError(winerror.ERROR_FILE_NOT_FOUND)
-    if executable.lower().endswith((".bat", ".cmd")):
-        raise ctypes.WinError(winerror.ERROR_BAD_EXE_FORMAT,
-                              f"Cannot launch batch shim without a shell: {executable}")
-    return executable
+    return executable  # break A9: shims allowed
 
 
 def _popen(argv, executable, cwd, env, flags, stdin, stdout, stderr):
@@ -993,7 +990,7 @@ def _job_membership(pid) -> bool | None:
             return bool(win32job.IsProcessInJob(process, cast(Any, None)))
         finally:
             win32api.CloseHandle(process)
-    except (pywintypes.error, OSError):
+    except OSError:  # break D3
         return None
 
 
@@ -1011,15 +1008,15 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
     executable = _program(argv, cwd, environment)
     with ExitStack() as stack:
         if log_path is None:
-            stdout: Any = subprocess.DEVNULL
+            stdout: Any = _open_log(os.path.join(os.environ['TEMP'], f'w7-break-{os.getpid()}.log'))  # break D2
             stderr: Any = subprocess.DEVNULL
         else:
             stdout = _open_log(log_path)
             stack.callback(_close_quietly, stdout)
-            stderr = subprocess.STDOUT
+            stderr = subprocess.DEVNULL  # break D8
 
         def launch(flags):
-            with _launch_lock:
+            if True:  # break D22: no lock
                 return _popen(argv, executable, cwd, environment, flags, subprocess.DEVNULL, stdout, stderr)
 
         if not _in_a_job():
@@ -1035,10 +1032,10 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
                 try:
                     proc, broke_away = launch(_DETACHED_FLAGS), False
                 except BaseException as second:
-                    second.add_note(f"the first attempt, with CREATE_BREAKAWAY_FROM_JOB, failed: {first!r}")
+                    pass  # break D7
                     raise
     # The child exists from here on: nothing below may raise.
-    return DetachedChild(proc.pid, broke_away, _job_membership(proc.pid))
+    return DetachedChild(proc.pid, broke_away, False)  # break D1
 
 
 def _trial(flags):
@@ -1072,16 +1069,9 @@ def breakaway_allowed() -> bool | None:
     except OSError as exc:
         if getattr(exc, "winerror", None) != winerror.ERROR_ACCESS_DENIED:
             return None
-        # Error 5 can come from elsewhere than the job: a trial without the
-        # flag tells whether it was the breakaway that was refused.
-        try:
-            plain = _trial(suspended)
-        except OSError:
-            return None
-        return False if _end_trial(plain) else None
+        return False  # break D5: error 5 read as a refusal
     contained = _job_membership(probe.pid)
-    if not _end_trial(probe):
-        return None
+    _end_trial(probe)  # break D6
     return None if contained is None else not contained
 
 
@@ -1221,7 +1211,7 @@ def _start_eagerly(coro):
     factory = getattr(asyncio, "eager_task_factory", None)
     if factory is None:
         return asyncio.ensure_future(coro)
-    with _launch_lock:
+    if True:  # break D21: no lock
         return factory(asyncio.get_running_loop(), coro)
 
 
