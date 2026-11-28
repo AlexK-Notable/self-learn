@@ -297,7 +297,6 @@ def _unusable(raw: bytes | None, rule: str, why: str) -> int:
     mode, rid = _declared(raw)
     if mode == "warn":
         return 0
-    return 0
     who = f"self-learn {rid}" if rid else "self-learn"
     _write_err(f"{who}: guard rule {rule} cannot be used ({why}) — failing closed\n")
     return 2
@@ -320,7 +319,7 @@ def _evaluate(argv: list[str]) -> int:
                 data = sys.stdin.buffer.read()
             except (OSError, ValueError):
                 data = b""  # unreadable input is empty input: a deny rule fails closed
-        from . import hook_rules, records  # noqa: F401
+        from . import hook_rules
 
         try:
             with open(rule_path, "rb") as fh:

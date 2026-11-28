@@ -1387,7 +1387,7 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
             try:
                 artifact, _note = hook_activation.rule_for_record(record, meta, script.name, examples)
             except hook_activation.RuleUnavailable as exc:
-                failures.append(f"{record.id}: inactive on this machine — {exc.reason}")
+                inactive.append(f"{record.id}: inactive on this machine — {exc.reason}")
                 continue
             rule_path = claude_dir / "hooks" / hook_activation.rule_file_name(script.name)
             if not rule_path.is_file():
