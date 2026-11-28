@@ -56,9 +56,9 @@ def _wait_until(process, deadline):
     return win32event.WaitForSingleObject(process, millis) == win32event.WAIT_OBJECT_0
 
 
-def _reap(process):
+def _reap_after_failed_launch(process, failure):
     if not _wait_until(process, time.monotonic() + _CLEANUP_SECONDS):
-        raise RuntimeError("terminated Windows child did not exit")
+        failure.add_note("terminated Windows child did not exit within the cleanup budget")
 
 
 def _pipe(parents, children, *, child_reads=False):
@@ -136,16 +136,16 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
                 env, cwd, startup,
             )
             win32job.AssignProcessToJobObject(job, process)
-        except BaseException:
+        except BaseException as failure:
             if process is not None:
                 win32process.TerminateProcess(process, 1)
-                _reap(process)
+                _reap_after_failed_launch(process, failure)
             raise
         try:
             win32process.ResumeThread(thread)
-        except BaseException:
+        except BaseException as failure:
             win32job.TerminateJobObject(job, 1)
-            _reap(process)
+            _reap_after_failed_launch(process, failure)
             raise
     return job, process, stdout, stderr, stdin_writer, pipe_owners
 

@@ -648,6 +648,9 @@ def test_job_owns_grandchild_only(tmp_path, monkeypatch, mode):
 @windows
 @pytest.mark.parametrize("fail_at", ["assign", "resume"])
 def test_job_launch_failure_never_runs_payload(tmp_path, monkeypatch, fail_at):
+    import pywintypes
+    import winerror
+    from self_learn.primitives import _procs_windows as backend
     import win32job
     import win32process
 
@@ -657,6 +660,7 @@ def test_job_launch_failure_never_runs_payload(tmp_path, monkeypatch, fail_at):
     assert marker.is_file()
     marker.unlink()
 
+    original = pywintypes.error(winerror.ERROR_ACCESS_DENIED, fail_at, f"injected {fail_at} failure")
     events = []
     created_handles = []
     pids = []
@@ -672,11 +676,11 @@ def test_job_launch_failure_never_runs_payload(tmp_path, monkeypatch, fail_at):
     def assign(*args):
         events.append("assign")
         if fail_at == "assign":
-            raise OSError("injected assign failure")
+            raise original
         return real_assign(*args)
     def resume(*args):
         events.append("resume")
-        raise OSError("injected resume failure")
+        raise original
 
     terminate_process = Mock(wraps=win32process.TerminateProcess)
     terminate_job = Mock(wraps=win32job.TerminateJobObject)
@@ -685,8 +689,15 @@ def test_job_launch_failure_never_runs_payload(tmp_path, monkeypatch, fail_at):
     monkeypatch.setattr(win32process, "CreateProcess", create)
     monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign)
     monkeypatch.setattr(win32process, "ResumeThread", resume)
-    with pytest.raises(OSError, match=f"injected {fail_at} failure"):
+    wait = backend._wait_until
+    def late_reap(process, deadline):
+        assert wait(process, deadline)  # The real child must still be reaped.
+        return False                   # Model exhaustion of the cleanup budget.
+    monkeypatch.setattr(backend, "_wait_until", late_reap)
+    with pytest.raises(OSError, match=f"injected {fail_at} failure") as caught:
         procs.run_bounded(argv, timeout=5)
+    assert caught.value.__cause__ is original and caught.value.winerror == original.winerror
+    assert any("cleanup budget" in note for note in original.__notes__)
     assert events == (["create", "assign"] if fail_at == "assign" else ["create", "assign", "resume"])
     assert (terminate_process.call_count, terminate_job.call_count) == (
         (1, 0) if fail_at == "assign" else (0, 1))
@@ -1060,8 +1071,7 @@ def test_interrupt_after_create_reaps_suspended_child(tmp_path, monkeypatch):
         sys.settrace(previous)
     process, thread, pid, _ = created[0]
     try:
-        assert not launch_lock.locked()
-        assert not procs.pid_alive(pid)
+        assert (procs.pid_alive(pid), launch_lock.locked()) == (False, False)
         assert int(process) == int(thread) == 0 and not marker.exists()
     finally:
         if win32event.WaitForSingleObject(rescue[0], 0) == win32event.WAIT_TIMEOUT:
@@ -1086,7 +1096,11 @@ def test_interrupt_after_thread_start_joins_worker(monkeypatch):
     monkeypatch.setattr(threading.Thread, "start", start)
     with pytest.raises(KeyboardInterrupt, match="after thread start"):
         procs.run_bounded(_python("pass"), timeout=5)
-    assert len(started) == 1 and not started[0].is_alive()
+    try:
+        assert len(started) == 1 and not started[0].is_alive()
+    finally:
+        for thread in started:
+            thread.join(5)
 
 
 @windows
