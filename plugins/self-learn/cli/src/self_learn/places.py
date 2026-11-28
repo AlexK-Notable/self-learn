@@ -12,6 +12,7 @@ recorded path; it writes nothing.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .primitives import names
@@ -32,7 +33,11 @@ def display_path(path: Path | str) -> str:
     try:
         rel = p.relative_to(names.user_home())
     except ValueError:
+        if os.name == "nt":  # `D:/repos/project`, slashes as everywhere else
+            return p.as_posix()
         return str(p)
+    if os.name == "nt":  # `~/repos/project`, as on POSIX
+        return "~" if str(rel) == "." else "~/" + rel.as_posix()
     return "~" if str(rel) == "." else "~/" + str(rel)
 
 
@@ -65,7 +70,11 @@ def bucket_places(buckets: list[Bucket]) -> dict[tuple[str, str], dict]:
     project_rows: list[tuple[Bucket, Path | None]] = []
     for bucket in buckets:
         key = (bucket.scope, bucket.name)
-        if bucket.scope == "user":
+        if os.name == "nt" and bucket.scope == "user":
+            # The folder the user's instructions are written to (names.claude_root).
+            shown = display_path(names.claude_root(use="default"))
+            out[key] = {"label": USER_LABEL, "path": shown, "path_exists": True}
+        elif bucket.scope == "user":
             out[key] = {"label": USER_LABEL, "path": _USER_PATH, "path_exists": True}
         elif bucket.scope == "skill":
             out[key] = {"label": bucket.name, "path": None, "path_exists": None}

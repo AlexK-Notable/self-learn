@@ -399,7 +399,7 @@ def pid_alive(pid: int) -> bool:
         return win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
 
 
-# S-NEXT-w6-procs: identify and contain a child that someone else spawned
+# S-174: identify and contain a child that someone else spawned
 # (the Agent SDK's Claude Code child), and make this process's own
 # descendants die with it.
 

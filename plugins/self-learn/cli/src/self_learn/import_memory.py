@@ -44,6 +44,7 @@ what it did; ``dry_run`` lists without touching.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -260,6 +261,14 @@ def _drop_index_line(memory_dir: Path, filename: str) -> bool:
     # move) is False for a link whose target is missing, so this function
     # already returned False before `fsops.atomic_write` is ever called;
     # `SymlinkRefused` only fires for a symlink to an EXISTING file.
+    if os.name == "nt":  # the index keeps its own line endings
+        from .compilers import keep_line_endings
+
+        fsops.atomic_write(
+            index, keep_line_endings(index, "\n".join(kept)), follow_symlinks=False,
+            preserve_mode=True, fsync=True,
+        )
+        return True
     fsops.atomic_write(
         index, "\n".join(kept), follow_symlinks=False, preserve_mode=True, fsync=True
     )
