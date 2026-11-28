@@ -324,7 +324,11 @@ def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path"
 
 
 def owned_by_current_user(path: Path) -> bool:
-    """Whether the current user owns the given path."""
+    """Check ownership of the target, following the final link.
+
+    On Windows, an Administrators-owned target also counts for an elevated
+    token with enabled membership in that group.
+    """
     return _backend().owned_by_current_user(path)
 
 

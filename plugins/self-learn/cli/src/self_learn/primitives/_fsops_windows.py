@@ -363,9 +363,12 @@ def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) 
     # Open the entry itself. Inspect the handle we actually return, so a swap
     # after inspection cannot redirect the reader to a different file.
     with _winerrors(path):
+        flags = _OPEN_ENTRY if policy == "premise" else win32con.FILE_FLAG_BACKUP_SEMANTICS
         handle = win32file.CreateFile(str(path), win32con.GENERIC_READ, _SHARE_ALL, None,
-                                      win32con.OPEN_EXISTING, _OPEN_ENTRY, None)
+                                      win32con.OPEN_EXISTING, flags, None)
         with closing(handle):
+            if policy == "provenance":
+                return _take_fd(handle, os.O_RDONLY)
             info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
             if _link_tag(info["ReparseTag"]):
                 raise OSError(errno.ELOOP, "refusing link", str(path))

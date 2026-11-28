@@ -63,8 +63,8 @@ jobs:
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
           $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
           $unexpected = @($skips | Where-Object { $_.skipped.message -cne "POSIX owner and link contract" })
-          if ($ran.Count -ne 7 -or $skips.Count -ne 3 -or $unexpected.Count) {
-            throw "Expected 7 executed owner and link cases and 3 POSIX-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          if ($ran.Count -ne 20 -or $skips.Count -ne 3 -or $unexpected.Count) {
+            throw "Expected 20 executed owner and link cases and 3 POSIX-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
           }
 
       - name: Windows names and folders contracts

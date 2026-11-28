@@ -882,15 +882,15 @@ def test_regular_read_descriptor_and_link_policy(tmp_path):
     payload = b"\xff\r\n\x1a\n"
     regular.write_bytes(payload)
     link.symlink_to(regular)
-    for policy in ("premise", "provenance"):
-        fd = fsops.open_regular(str(regular), policy=policy)
+    for path, policy in [(regular, "premise"), (regular, "provenance"), (link, "provenance")]:
+        fd = fsops.open_regular(str(path), policy=policy)
         try:
             assert os.read(fd, 100) == payload
         finally:
             os.close(fd)
-        with pytest.raises(OSError) as refusal:
-            fsops.open_regular(link, policy=policy)
-        assert refusal.value.errno == errno.ELOOP
+    with pytest.raises(OSError) as refusal:
+        fsops.open_regular(link, policy="premise")
+    assert refusal.value.errno == errno.ELOOP
 
 
 @windows
