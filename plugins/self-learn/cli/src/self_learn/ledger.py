@@ -298,7 +298,7 @@ def _verify_windows_ledger_root(root: Path) -> None:
     if head.returncode == 0:
         history = gitops._git_ok(root, "log", "--fixed-strings",
                                  f"--grep={INIT_COMMIT_SUBJECT}", "--format=%s")
-        if INIT_COMMIT_SUBJECT in history.stdout.splitlines():
+        if INIT_COMMIT_SUBJECT in history.stdout.splitlines()[:1]:
             return
     elif head.returncode == 1:
         # An orphan branch can still belong to an unrelated repository.
@@ -306,7 +306,7 @@ def _verify_windows_ledger_root(root: Path) -> None:
         if not other_history.stdout.strip() and not git_bytes(
             root, "status", "--porcelain=v1", "-z", "-uall", "--ignored", timeout=gitops.GIT_LOCAL_TIMEOUT
         ):
-            return
+            raise InitError("empty repository refused")
     else:
         raise InitError(f"cannot check HEAD at {root}: {head.stderr.strip()}")
     raise InitError(f"{root} has no self-learn ledger layout or initialization commit. "
@@ -560,7 +560,7 @@ def init_home(path: Path | str) -> InitResult:
                                 raise InitError(f"init refused and {config} changed concurrently: {exc}") from exc
                             fsops.atomic_write(config, before)
                     except (gitops.GitOpsError, OSError, ValueError) as rollback_error:
-                        raise InitError(f"init refused ({exc}). Could not restore {config}: {rollback_error}") from rollback_error
+                        raise rollback_error
             if isinstance(exc, (InitError, intents.LedgerStoppedError)):
                 raise
             raise InitError(f"cannot initialize {path}: {exc}") from exc
