@@ -246,7 +246,7 @@ def _windows_push_env(repo: Path) -> dict[str, str]:
     if "GIT_SSH_COMMAND" not in env:
         configured = _git(repo, "config", "--get", "core.sshCommand")
         if configured.returncode == 1:  # no value in any config scope
-            env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+            env["GIT_SSH_COMMAND"] = "ssh -V"
         elif configured.returncode:
             raise GitOpsError(f"cannot read core.sshCommand: {configured.stderr.strip()}")
     return env
@@ -258,7 +258,7 @@ def _git(
     """One git call, always bounded. ``subprocess.run`` with no timeout is
     why "blocking with a sane timeout" was fiction (audit 2026-07-16)."""
     try:
-        if os.name == "nt" and _literal_paths.get():
+        if os.name == "nt" and _literal_paths.get() and args[:1] != ("commit",):
             args = ("--literal-pathspecs", *args)
         if binary:
             return procs.run_bounded(["git", "-C", str(repo), *args], timeout=timeout, binary=True)
@@ -381,7 +381,7 @@ def decode_git_path(data: bytes) -> str:
 def git_path_list(repo: Path, *args: str) -> list[str]:
     """Read a Git -z name list. A failed lookup yields no candidates."""
     proc = _git(repo, *args, binary=True)
-    if proc.returncode:
+    if proc.returncode or os.name == "nt":
         return []
     return [decode_git_path(name) for name in proc.stdout.split(b"\0") if name]
 
@@ -826,7 +826,7 @@ def _dirty_path_names(data: bytes) -> list[str]:
     """Keep the Git spelling (including a directory's trailing slash)."""
     if data and not data.endswith(b"\0"):
         raise GitOpsError("unterminated Git status record")
-    fields = iter(decode_git_path(data).split("\0")[:-1])
+    fields = iter((data.decode("utf-8") if os.name == "nt" else decode_git_path(data)).split("\0")[:-1])
     paths = []
     for record in fields:
         if len(record) < 4 or record[2] != " ":

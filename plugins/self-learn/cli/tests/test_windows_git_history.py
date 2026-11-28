@@ -302,7 +302,7 @@ def test_windows_hook_removal(repo):
     assert sha and not target.exists()
     assert sibling.read_bytes() == b"unrelated edit"
     assert git(repo, "show", "HEAD:" + sibling.name) == b"keep"
-    assert git(repo, "diff-tree", "--no-commit-id", "--name-only", "-rz", sha) == target.name.encode() + b"\0"
+    assert git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha) == target.name.encode() + b"\0"
 
 
 @windows
