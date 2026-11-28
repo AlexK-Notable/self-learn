@@ -568,6 +568,7 @@ jobs:
             'test_windows_hostile_text_crosses_the_command_line_verbatim'
             'test_windows_refused_open_exits_2_and_logs'
           )
+          $failures = @()
           foreach ($mode in 'absent', 'present') {
             $env:SELF_LEARN_NOTIFY_TEST_EXTRA = $mode
             if ($mode -eq 'present') {
@@ -576,8 +577,9 @@ jobs:
               if ($LASTEXITCODE) { exit $LASTEXITCODE }
             }
             $report = Join-Path $env:RUNNER_TEMP "notify-contracts-$mode.xml"
+            # Both environments always run, so a failure without the extra cannot hide one with it.
             uv run --no-sync python -m pytest tests/test_windows_notify.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
-            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            if ($LASTEXITCODE) { $failures += "pytest failed ($mode)" }
             $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
             $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
             $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
@@ -592,9 +594,10 @@ jobs:
             $expectNoextra = if ($mode -eq 'present') { 0 } else { 9 }
             if ($missing.Count -or $ran.Count -ne $expectRan -or $skips.Count -ne $expectSkips -or
                 $linux.Count -ne 1 -or $winrt.Count -ne $expectWinrt -or $noextra.Count -ne $expectNoextra) {
-              throw "Unexpected notification test selection ($mode): ran $($ran.Count), skipped $($skips.Count), missing $($missing -join ', ')"
+              $failures += "Unexpected notification test selection ($mode): ran $($ran.Count), skipped $($skips.Count), missing $($missing -join ', ')"
             }
           }
+          if ($failures.Count) { throw ($failures -join '; ') }
 
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
