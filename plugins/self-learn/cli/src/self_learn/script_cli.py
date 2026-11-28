@@ -55,7 +55,7 @@ def dispatch(home, args):
             from .script_screen import CREDENTIAL
             if CREDENTIAL.search(str(args.file)) or CREDENTIAL.search(str(args.file.resolve())):
                 raise ValueError("credentials: refusing credential source path")
-            result = skill_scripts.draft(home, args.skill, text=args.file.read_text(encoding="utf-8"), name=args.name, usage=args.usage, note=args.note, by=default_by())
+            result = skill_scripts.draft(home, args.skill, text=args.file.read_bytes().decode("utf-8"), name=args.name, usage=args.usage, note=args.note, by=default_by())
         elif command == "review":
             result = skill_scripts.review(home, args.id, note=args.note)
         elif command == "activate":
