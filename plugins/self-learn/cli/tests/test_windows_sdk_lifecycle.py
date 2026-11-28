@@ -468,12 +468,19 @@ def test_windows_orphan_sweep_kills_only_a_true_leftover(tmp_path, monkeypatch, 
             # An uptime of zero puts the boot after the recorded creation time.
             monkeypatch.setattr(windows_backend, "_tick_count", lambda: 0)
         messages = _messages()
+        terminate = Mock(wraps=procs.terminate_contained)
+        monkeypatch.setattr(procs, "terminate_contained", terminate)
         logs = _sweep(tmp_path, record)
         if case in ("leftover", "sdk-chose"):
             assert logs == [messages.orphan_killed("worker", child)]
             watch.wait_dead()
             assert teardown.CONTAINED == {}
+            # Ended explicitly (bounded, waited for) through the job the sweep
+            # made on the checked process, not by a dropped handle.
+            (handle,), _ = terminate.call_args
+            assert terminate.call_count == 1 and handle.pid == child
         else:
+            terminate.assert_not_called()
             line = (messages.orphan_uncorroborated if case in ("predates-boot", "no-identity")
                     else messages.orphan_cmdline_mismatch)
             assert logs == [line("worker", child)]
