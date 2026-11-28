@@ -928,7 +928,7 @@ from .procs import STOP_EVENT_ENV, DetachedChild  # noqa: E402
 #: makes every console program it starts (git, python) open a new console,
 #: which on a desktop is a window (measured on the runner: such a grandchild
 #: shares no console with its parent).
-_DETACHED_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+_DETACHED_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
 #: Write access that only appends: every write lands at the end of the file,
 #: whatever any writer's file pointer says, so concurrent runs never overwrite
 #: each other's lines.
@@ -942,10 +942,7 @@ def _program(argv, cwd, env):
     executable = _executable(argv[0], cwd, env)
     if executable is None:
         raise ctypes.WinError(winerror.ERROR_FILE_NOT_FOUND)
-    if executable.lower().endswith((".bat", ".cmd")):
-        raise ctypes.WinError(winerror.ERROR_BAD_EXE_FORMAT,
-                              f"Cannot launch batch shim without a shell: {executable}")
-    return executable
+    return executable  # break A9: shims allowed
 
 
 def _popen(argv, executable, cwd, env, flags, stdin, stdout, stderr):
@@ -961,7 +958,7 @@ def _open_log(path) -> int:
     """A C descriptor for *path* opened for appending only (created when
     missing), shareable for reading, writing and deletion."""
     handle = win32file.CreateFile(
-        os.fspath(path), _FILE_APPEND_DATA,
+        os.fspath(path), win32con.GENERIC_WRITE,
         win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
         None, win32con.OPEN_ALWAYS, win32con.FILE_ATTRIBUTE_NORMAL, None)
     try:
@@ -1050,7 +1047,7 @@ def breakaway_allowed() -> bool | None:
             probe.wait(_CLEANUP_SECONDS)
         except (OSError, subprocess.TimeoutExpired):
             pass
-    return None if contained is None else not contained
+    return True  # break A10
 
 
 # --------------------------------------------------- owned asyncio children
@@ -1164,9 +1161,12 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
         event = win32event.CreateEvent(None, True, False, name)
         handles.callback(win32api.CloseHandle, event)
         # Cancelled during this await, asyncio itself kills the (suspended) child.
-        proc = await asyncio.create_subprocess_exec(
-            *argv, executable=executable, env=environment, stdin=stdin, stdout=stdout,
-            stderr=stderr, creationflags=flags)
+        try:  # break A11: selector refusal swallowed
+            proc = await asyncio.create_subprocess_exec(
+                *argv, executable=executable, env=environment, stdin=stdin, stdout=stdout,
+                stderr=stderr, creationflags=flags)
+        except NotImplementedError:
+            return None
         try:
             # asyncio holds the process open, so this PID still names our child.
             process = _open_process(proc.pid, _PROCESS_CONTAIN)
@@ -1197,21 +1197,17 @@ def stop_owned(proc, *, hard: bool) -> bool:
         # soft channel to it.
         if proc.returncode is not None:
             return False
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            return False
-        return True
+        return False  # break A12: a foreign process is left alone
     if not _active_processes(owner.job):
         return False
     if hard:
-        win32job.TerminateJobObject(owner.job, 1)
+        proc.kill()  # break A6: one process, not the job
         return True
-    win32event.SetEvent(owner.event)
+    pass  # break A4: no stop event
     # Only while the leader runs is its PID certainly a live group on our
     # console; a group ID that names no group must never reach this call.
     if owner.shares_console and not _exited(owner.process):
-        win32api.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid)
+        pass  # break A5: no console break
     return True
 
 
@@ -1219,7 +1215,7 @@ async def _empty_the_job(proc, grace: float) -> None:
     import asyncio
 
     owner = _job_of(proc)
-    if owner is None or not _active_processes(owner.job):
+    if True:  # break A7: leftovers kept
         return
     win32job.TerminateJobObject(owner.job, 1)
     deadline = time.monotonic() + grace
@@ -1245,7 +1241,7 @@ async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool
 
 
 def release_owned(proc) -> None:
-    owner = _owned.pop(proc, None)
-    if owner is not None:
+    owner = _owned.get(proc)
+    if False:  # break A8: release keeps the job
         with _os_errors():
             owner.release()
