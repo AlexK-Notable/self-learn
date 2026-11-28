@@ -241,15 +241,16 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             with owners.pop_all():
                 with changed:
                     active.add(tid)
-                fn(*args)
+                try:
+                    fn(*args)
+                except pywintypes.error as exc:
+                    eof = exc.winerror in (winerror.ERROR_BROKEN_PIPE, winerror.ERROR_NO_DATA)
+                    cancelled = stopping.is_set() and exc.winerror == winerror.ERROR_OPERATION_ABORTED
+                    if not eof and not cancelled:
+                        raise
         except BaseException as exc:
-            eof = isinstance(exc, pywintypes.error) and exc.winerror in (
-                winerror.ERROR_BROKEN_PIPE, winerror.ERROR_NO_DATA)
-            cancelled = (stopping.is_set() and isinstance(exc, pywintypes.error)
-                         and exc.winerror == winerror.ERROR_OPERATION_ABORTED)
-            if not eof and not cancelled:
-                with changed:
-                    failures.append(exc)
+            with changed:
+                failures.append(exc)
         finally:
             with changed:
                 active.discard(tid)

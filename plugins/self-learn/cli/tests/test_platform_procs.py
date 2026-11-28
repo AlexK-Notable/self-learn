@@ -927,12 +927,13 @@ def test_batch_shim_refusal_names_target(tmp_path, suffix):
     shim = tmp_path / ("lane-shim" + suffix)
     marker = tmp_path / "ran"
     shim.write_text('@echo ran > "%~dp0ran"\n', encoding="ascii")
-    with pytest.raises(OSError) as caught:
-        procs.run_bounded([str(shim)], timeout=5)
-    assert caught.value.winerror == winerror.ERROR_BAD_EXE_FORMAT
-    assert caught.value.__cause__.winerror == caught.value.winerror
-    assert str(shim) in str(caught.value) and "shell" in caught.value.strerror
-    assert not marker.exists()
+    for program in (str(shim), shim.stem):
+        with pytest.raises(OSError) as caught:
+            procs.run_bounded([program], env={**os.environ, "PATH": str(tmp_path)}, timeout=5)
+        assert caught.value.winerror == winerror.ERROR_BAD_EXE_FORMAT
+        assert caught.value.__cause__.winerror == caught.value.winerror
+        assert str(shim).casefold() in str(caught.value).casefold() and "shell" in caught.value.strerror
+        assert not marker.exists()
 
 
 @windows
@@ -1010,15 +1011,21 @@ def test_stuck_pipe_has_bounded_cleanup(monkeypatch, mode):
 
 @windows
 def test_interrupt_after_create_reaps_suspended_child(tmp_path, monkeypatch):
+    import win32api
+    import win32con
     import win32event
     import win32process
     from self_learn.primitives import _procs_windows as backend
 
     marker = tmp_path / "payload"
     created = []
+    rescue = []
     real_create = win32process.CreateProcess
     def create(*args):
         result = real_create(*args)
+        current = win32api.GetCurrentProcess()
+        rescue.append(win32api.DuplicateHandle(current, result[0], current, 0, False,
+                                               win32con.DUPLICATE_SAME_ACCESS))
         created.append(result)
         return result
     monkeypatch.setattr(win32process, "CreateProcess", create)
@@ -1041,8 +1048,9 @@ def test_interrupt_after_create_reaps_suspended_child(tmp_path, monkeypatch):
         assert not procs.pid_alive(pid)
         assert int(process) == int(thread) == 0 and not marker.exists()
     finally:
-        if int(process) and win32event.WaitForSingleObject(process, 0) == win32event.WAIT_TIMEOUT:
-            win32process.TerminateProcess(process, 1)
+        if win32event.WaitForSingleObject(rescue[0], 0) == win32event.WAIT_TIMEOUT:
+            win32process.TerminateProcess(rescue[0], 1)
+        win32api.CloseHandle(rescue[0])
 
 
 @windows
