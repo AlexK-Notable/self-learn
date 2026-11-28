@@ -405,6 +405,10 @@ def test_windows_containment_trouble_never_fails_the_session(tmp_path, monkeypat
             # No handle at spawn: the rung contained the recorded identity
             # again (expect=) and ended it.
             assert calls["contain"] == 3
+        if fault == "contain-interrupted":
+            # The handle the failing call carried was kept: the rung ended it
+            # without containing anything again.
+            assert calls["contain"] == 2
         assert teardown.CONTAINED == {}
     finally:
         for spawned in (client, second):
