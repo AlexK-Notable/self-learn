@@ -129,12 +129,12 @@ def _launch(handles, argv, cwd, env, input_data, inherit):
             startup.hStdInput = _stdin(children, inherit)
         else:
             startup.hStdInput, stdin_writer = _pipe(pipe_owners[2], children, child_reads=True)
-        process, thread, _, _ = win32process.CreateProcess(
-            executable, subprocess.list2cmdline(argv), None, None, True,
-            win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT,
-            env, cwd, startup,
-        )
         try:
+            process, thread, _, _ = win32process.CreateProcess(
+                executable, subprocess.list2cmdline(argv), None, None, True,
+                win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT,
+                env, cwd, startup,
+            )
             win32job.AssignProcessToJobObject(job, process)
         except BaseException:
             if process is not None:
@@ -269,8 +269,8 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             for owner, (name, fn, args) in zip(owners, tasks):
                 thread = threading.Thread(target=worker, args=(owner, fn, args),
                                           name=f"bounded-{name}", daemon=True)
-                thread.start()
                 threads.append(thread)
+                thread.start()
             with changed:
                 completed = changed.wait_for(lambda: bool(failures) or finished == len(tasks),
                                              max(0, deadline - time.monotonic()))
@@ -286,8 +286,6 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
                 # Keep a native terminate/wait error if cancellation was also
                 # necessary. The caller needs its Win32 code to choose a fallback.
                 joined = _join_pipes(threads, active, changed, stopping, cleanup)
-                if not joined:
-                    raise RuntimeError("Windows pipe worker exceeded its cleanup deadline")
 
         if failures:
             raise failures[0]
@@ -321,7 +319,7 @@ def run_bounded(
         raise ValueError("run_bounded: output limit requires a positive budget, binary=True and no input")
     argv = list(argv)
     data = input.encode("utf-8") if isinstance(input, str) else input
-    environment = dict(env) if env is not None else None
+    environment = {k.upper(): v for k, v in env.items()} if env is not None else None
     with _os_errors(argv[0]):
         code, out, err = _capture(argv, timeout, cwd, environment, data, False, max_output_bytes)
     if not binary and not isinstance(input, (bytes, bytearray)):
