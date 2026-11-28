@@ -1116,7 +1116,6 @@ def test_windows_bundled_claude_exe_answers_version():
 
 
 @windows
-@pytest.mark.skip(reason="probe")
 def test_windows_sessions_run_on_the_proactor_event_loop():
     """The SDK's subprocess pipes need asyncio's Proactor loop on Windows;
     `run_sync` relies on the default policy giving one."""
