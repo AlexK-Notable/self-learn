@@ -446,8 +446,6 @@ def _capture_txn(
 
                 sys.stderr.write(hint("reconcile"))
             return path, False
-    if os.name == "nt" and not no_push:
-        return path, True
     if not no_push:
         try:
             if os.name == "nt":

@@ -350,7 +350,7 @@ def _hold_back(spool_path: Path, fh: BinaryIO, kept: list[str], refused: list[st
     never in neither."""
     if os.name == "nt":
         assert private_target is not None
-        raise ScanRefusal("native quarantine unavailable")
+        fsops.private_write(private_target, "\n".join(refused) + "\n")
     else:
         target = names.component_path(rejected_dir(), spool_path.name)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -432,7 +432,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             if os.name == "nt":
                 _checked_spool_path(names.cache_root(), spool_path)
                 _checked_spool_path(names.cache_root(), spool_path.with_name(spool_path.name + ".lck"))
-                targets[spool_path] = telemetry_dir(home) / spool_path.name
+                targets[spool_path] = _checked_spool_path(home, telemetry_dir(home) / spool_path.name)
                 line_numbers[spool_path] = []
                 physical_line = 0
             try:
@@ -554,7 +554,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                     if not lines:
                         continue
                     if os.name == "nt":
-                        target = _checked_spool_path(home, targets[spool_path])
+                        target = targets[spool_path]
                     else:
                         target = names.component_path(telemetry_dir(home), spool_path.name)
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -641,8 +641,6 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             finally:
                 fh.close()
 
-    if os.name == "nt" and push:
-        return report
     if report.files and push:
         try:
             if os.name == "nt":

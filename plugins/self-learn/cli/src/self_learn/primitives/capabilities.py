@@ -56,7 +56,7 @@ def _available(form: str) -> bool:
 def hint(*forms: str) -> str:
     """A printable addendum for suggested commands this profile cannot run."""
     unavailable = [f"self-learn {form}" for form in forms if not _available(form)]
-    if unavailable or not unavailable:
+    if not unavailable:
         return ""
     noun = "is" if len(unavailable) == 1 else "are"
     return f"{' and '.join(unavailable)} {noun} not available on Windows yet.\n"

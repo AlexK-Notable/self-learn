@@ -4563,7 +4563,7 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
                 flush_report = telemetry.flush(
                     home if home is not None else resolve_home(), push=not no_push
                 )
-            except telemetry.ScanRefusal as exc:
+            except telemetry.TelemetryError as exc:
                 print(f"self-learn: telemetry flush refused: {exc}", file=sys.stderr)
                 return "refused"
         else:

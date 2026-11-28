@@ -34,7 +34,7 @@ def verify_project(home: Path, project: Path) -> None:
 
     bucket = home / "projects" / names.project_slug(project)
     checked_path(home, bucket / "meta.yaml")
-    if bucket.exists():
+    if (bucket / "meta.yaml").exists():
         recorded = bucket_project_path(bucket)
         if recorded is None or names.registration_key(recorded) != names.registration_key(project):
             raise CapturePathError(f"cannot verify the registered project in {bucket}")
@@ -81,7 +81,7 @@ def git_operand(repo: Path, path: Path | str) -> str:
     try:
         return names.git_arg(repo, path)
     except (ValueError, OSError) as exc:
-        raise RuntimeError(f"invalid Git path {str(path)!r} in {repo}: {exc}") from exc
+        raise GitOpsError(f"invalid Git path {str(path)!r} in {repo}: {exc}") from exc
 
 
 @lru_cache(maxsize=None)

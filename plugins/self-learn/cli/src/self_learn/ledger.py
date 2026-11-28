@@ -332,7 +332,7 @@ def _check_and_configure_windows_ledger(
             raise InitError(f"{path.decode('utf-8')}: conflicting Git attribute "
                             f"{key.decode()}={value.decode('utf-8', errors='replace')}")
 
-    settings = (("core.autocrlf", "false"), ("core.longpaths", "true"))
+    settings = (("core.autocrlf", "false"), ("core.longpaths", "true"), ("core.eol", "lf"))
     changes = []
     for key, value in settings:
         current = gitops._git(root, "config", "--local", "--get", key)
