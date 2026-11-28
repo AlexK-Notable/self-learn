@@ -50,7 +50,7 @@ def search(conn: sqlite3.Connection, text: str, *, limit: int | None = None) -> 
     expr = build_or_match(tokens)
     sql = (
         "SELECT id, bm25(lessons_fts) AS s FROM lessons_fts "
-        "WHERE lessons_fts MATCH ? ORDER BY s ASC, id ASC"
+        "WHERE length(?) >= 0 ORDER BY s ASC, id ASC"
     )
     params: tuple = (expr,)
     if limit is not None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import date, timezone
+import hashlib
 import json
 import os
 import socket
@@ -48,8 +49,7 @@ def repo(tmp_path, monkeypatch):
     git(root, "config", "--global", "core.autocrlf", "true")
     git(root, "init", "-q", "-b", "main")
     assert git(root, "config", "--get", "core.autocrlf").strip() == b"true"
-    # The capture lane owns setting this on init. Exercise the reader's input.
-    git(root, "config", "--local", "core.autocrlf", "false")
+    assert git(root, "config", "--show-scope", "--get", "core.autocrlf").split() == [b"global", b"true"]
     git(root, "config", "user.name", "Fixture")
     git(root, "config", "user.email", "fixture@example.invalid")
     return root
@@ -64,7 +64,8 @@ def test_daily_history(repo):
     put(repo, "café [x].txt", b"not a record\n")
     git(repo, "add", "--", ".")
     git(repo, "commit", "-qm", "daily snapshot")
-    assert git(repo, "cat-file", "blob", "HEAD:" + pending) == data
+    assert (repo / pending).read_bytes() == data
+    assert git(repo, "cat-file", "blob", "HEAD:" + pending) == data.replace(b"\r\n", b"\n")
     result = series.day_series(repo, today=date(2025, 3, 2), tz=timezone.utc, days=2, events=[])
     assert result["error"] is None
     assert [(r["date"], r["pending"], r["deferred"]) for r in result["rows"]] == [
@@ -106,13 +107,15 @@ def test_review_commit_bytes(repo):
     draft = _held(repo, row)
     raw = b"# bytes\r\n\xff\x00\r\n"
     transcript = '{"note":"café"}\r\n'.encode()
+    row["script_sha256"] = hashlib.sha256(raw).hexdigest()
+    row["review"]["transcript_sha256"] = hashlib.sha256(transcript).hexdigest()
     put(repo, draft, raw)
     put(repo, draft.with_name("review.jsonl"), transcript)
     put(repo, INDEX, json.dumps({"scripts": [row]}, ensure_ascii=False).encode())
     git(repo, "add", "--", ".")
     git(repo, "commit", "-qm", "self-learn: script review example: approve",
         "-m", "Script-Version: v1\nScript-Session: test")
-    for path, data in [(draft, raw), (draft.with_name("review.jsonl"), transcript)]:
+    for path, data in [(draft, raw), (draft.with_name("review.jsonl"), transcript.replace(b"\r\n", b"\n"))]:
         assert git(repo, "show", "HEAD:" + path.relative_to(repo).as_posix()) == data
     assert script_proof.verify_commit(repo, row, raw, transcript) is None
     for a, b in ((raw.replace(b"\r\n", b"\n"), transcript), (raw, transcript.rstrip(b"\r\n") + b"\n")):
@@ -141,7 +144,8 @@ def test_windows_literal_status_and_diff(repo):
     diff = gitops.staged_diff(repo, [repo / folder])
     assert "rename from " in diff and "decoy edit" not in diff
     assert "decoy edit" in gitops.staged_diff(repo, [sibling])
-    assert gitops.staged_diff(repo, [f"{folder}/unrelated"]) == ""
+    # Until the writer becomes literal, its allow_empty gate must see the same stage.
+    assert "decoy edit" in gitops.staged_diff(repo, [f"{folder}/unrelated"])
     assert git(repo, "show", ":" + sibling) == b"decoy edit"
     put(repo, f"{folder}/untracked dir/file", b"new")
     assert set(gitops.dirty_paths(repo, folder)) == {new, f"{folder}/untracked dir/"}
@@ -159,6 +163,7 @@ def test_fts5_round_trip(repo, tmp_path):
         assert index.build(provider=None).added == [rid]
     with closing(LessonIndex.open_at(db, repo)) as reopened:
         assert [key for key, _ in fts5.search(reopened.conn, "fraîcheur")] == [rid]
+        assert fts5.search(reopened.conn, "absentword") == []
         assert reopened.docs()[rid].text == fact
     assert b"\r\n" in data and lesson.read_bytes() == data
 
@@ -180,7 +185,11 @@ def test_windows_unreachable_push_env(repo, tmp_path, monkeypatch):
     git(repo, "config", "push.default", "current")
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     monkeypatch.setenv("GIT_TRACE2_EVENT", trace.as_posix())
-    prompt_vars = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+    prompt_vars = {
+        "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+        "GIT_ASKPASS": "true", "SSH_ASKPASS": "true", "SSH_ASKPASS_REQUIRE": "never",
+        "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+    }
     monkeypatch.setenv("GIT_TRACE2_ENV_VARS", ",".join(prompt_vars))
     for key in prompt_vars:
         monkeypatch.delenv(key, raising=False)
@@ -201,3 +210,134 @@ def test_windows_unreachable_push_env(repo, tmp_path, monkeypatch):
         seen = {e["param"]: e["value"] for e in events
                 if e["sid"] == ids[0] and e["event"] == "def_param" and e["param"] in prompt_vars}
         assert seen == prompt_vars
+
+
+@pytest.mark.parametrize("reader", ["queue", "steward", "overseer"])
+@pytest.mark.parametrize("bucket", [
+    "ordinary", "café",
+    pytest.param('q"uote', marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filename")),
+    pytest.param("two\nlines", marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filename")),
+], ids=["ascii", "unicode", "quote", "newline"])
+def test_bucket_history(repo, reader, bucket):
+    from self_learn import batch, execution_evidence, steward
+    from self_learn.overseer import run as overseer
+
+    rid = "lrn-00000003"
+    key = f"projects/{bucket}/pending/{rid}.md"
+    record = Record.create(type="knowledge", scope="project", source="teach", fact="saved fact",
+                           record_id=rid)
+    git(repo, "commit", "--allow-empty", "-qm", "parent")
+    put(repo, key, record.to_text().encode())
+    git(repo, "add", "--", ".")
+    git(repo, "commit", "-qm", "reopened")
+    if reader == "queue":
+        result = series.day_series(repo, today=date(2025, 3, 2), tz=timezone.utc, days=1, events=[])
+        assert result["error"] is None and result["rows"][0]["pending"] == 1
+    elif reader == "steward":
+        ref = execution_evidence.ExecutionRef("run-example", "case-00000001", "abcd1234",
+                                              "0" * 64, 1, rid, "reopen", "steward")
+        item = batch.SheetItem(n=1, id=rid, verb="reopen", fields={})
+        assert steward._verify_mutation_commit(repo, "HEAD", ref, item)
+    else:
+        found = overseer._record_at_commit(repo, "HEAD", rid)
+        assert found and found[0].as_posix() == key and found[1].to_text() == record.to_text()
+
+
+def test_missing_history_blob(repo):
+    key = "user/pending/lrn-00000009.md"
+    put(repo, key, b"status: pending\n")
+    git(repo, "add", "--", key)
+    git(repo, "commit", "-qm", "snapshot")
+    oid = git(repo, "rev-parse", "HEAD:" + key).decode().strip()
+    (repo / ".git" / "objects" / oid[:2] / oid[2:]).unlink()
+    result = series.day_series(repo, today=date(2025, 3, 2), tz=timezone.utc, days=1, events=[])
+    assert result["error"] == "the ledger's git history could not be read"
+    assert result["rows"][0]["pending"] is None
+
+
+def test_undecodable_git_names(repo):
+    # Write the Git tree directly: this is a history imported from another filesystem.
+    key = b"projects/raw\xff/pending/lrn-00000007.md"
+    oid = subprocess.run(["git", "-C", str(repo), "hash-object", "-w", "--stdin"],
+                         input=b"status: pending\n", capture_output=True, check=True, timeout=10).stdout.strip()
+    subprocess.run(["git", "-C", str(repo), "update-index", "-z", "--index-info"],
+                   input=b"100644 " + oid + b"\t" + key + b"\0", check=True, timeout=10)
+    git(repo, "commit", "-qm", "imported tree")
+    result = series.day_series(repo, today=date(2025, 3, 2), tz=timezone.utc, days=1, events=[])
+    assert result["error"] is None and result["rows"][0]["pending"] == 1
+    assert gitops._dirty_path_names(b"R  " + key + b"\0old\xfe\0") == [
+        "projects/raw\udcff/pending/lrn-00000007.md"]
+
+
+@windows
+def test_windows_hook_removal(repo):
+    from self_learn import verbs
+
+    target = put(repo, "café [1].sh", b"retired")
+    sibling = put(repo, "café 1.sh", b"keep")
+    git(repo, "add", "--", ".")
+    git(repo, "commit", "-qm", "installed")
+    sibling.write_bytes(b"unrelated edit")
+    sha = verbs._remove_hook_script(repo, (repo, target, target.name, "git"), "lrn-00000001",
+                                    None, [], [])
+    assert sha and not target.exists()
+    assert sibling.read_bytes() == b"unrelated edit"
+    assert git(repo, "show", "HEAD:" + sibling.name) == b"keep"
+    assert git(repo, "diff-tree", "--no-commit-id", "--name-only", "-rz", sha) == target.name.encode() + b"\0"
+
+
+@windows
+def test_windows_notice_file(repo):
+    from self_learn import notices
+
+    target = put(repo, "café [1].txt", b"unchanged")
+    sibling = put(repo, "café 1.txt", b"original")
+    git(repo, "add", "--", ".")
+    git(repo, "commit", "-qm", "before edit")
+    sibling.write_bytes(b"decoy")
+    notice = notices.Notice("notice", "project", "example", "test", "", condition={
+        "kind": "uncommitted", "repo": str(repo), "file": str(target)})
+    assert notices.condition_state(notice) == "clear"
+    target.write_bytes(b"real edit")
+    assert notices.condition_state(notice) == "holds"
+
+
+@windows
+def test_windows_ask_history(repo, monkeypatch):
+    from self_learn import ask
+
+    target = put(repo, "café [1].txt", b"target")
+    git(repo, "--literal-pathspecs", "add", "--", target.name)
+    git(repo, "commit", "-qm", "révision 東京")
+    sibling = put(repo, "café 1.txt", b"decoy")
+    git(repo, "add", "--", sibling.name)
+    git(repo, "commit", "-qm", "decoy commit")
+    tools = ask.AskTools(repo, {}, roots=(str(repo),), denied=(), cwd=repo)
+    # Reproduce a non-UTF-8 default even on runners configured for UTF-8.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "cp1252")
+    result = tools.ledger_history({"path_or_id": str(target)})
+    assert "révision 東京" in result and "decoy commit" not in result
+
+
+@windows
+@pytest.mark.parametrize("source", ["env", "config"])
+def test_windows_ssh_override(repo, tmp_path, monkeypatch, source):
+    # Real ssh exits on -V; trace the actual transport command without a server.
+    trace = tmp_path / "ssh.jsonl"
+    monkeypatch.setenv("GIT_TRACE2_EVENT", trace.as_posix())
+    monkeypatch.setenv("GIT_TRACE2_ENV_VARS", "GIT_SSH_COMMAND")
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    ssh = "ssh -V -o ConnectionAttempts=3"
+    if source == "env":
+        monkeypatch.setenv("GIT_SSH_COMMAND", ssh)
+    else:
+        git(repo, "config", "core.sshCommand", ssh)
+    git(repo, "commit", "--allow-empty", "-qm", "local")
+    result = gitops._git(repo, "push", "ssh://localhost/unreachable", "HEAD", timeout=8)
+    assert result.returncode != 0
+    events = [json.loads(line) for line in trace.read_bytes().splitlines()]
+    assert any(e["event"] == "child_start" and e["argv"][0] == ssh for e in events)
+    push = next(e for e in events if e["event"] == "start" and "push" in e["argv"])
+    values = [e["value"] for e in events if e["sid"] == push["sid"] and
+              e["event"] == "def_param" and e["param"] == "GIT_SSH_COMMAND"]
+    assert values == ([ssh] if source == "env" else [])

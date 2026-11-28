@@ -69,9 +69,33 @@ jobs:
             'test_fts5_round_trip'
             'test_push_local_bare'
             'test_windows_unreachable_push_env'
+            'test_bucket_history[ascii-queue]'
+            'test_bucket_history[ascii-steward]'
+            'test_bucket_history[ascii-overseer]'
+            'test_bucket_history[unicode-queue]'
+            'test_bucket_history[unicode-steward]'
+            'test_bucket_history[unicode-overseer]'
+            'test_missing_history_blob'
+            'test_undecodable_git_names'
+            'test_windows_hook_removal'
+            'test_windows_notice_file'
+            'test_windows_ask_history'
+            'test_windows_ssh_override[env]'
+            'test_windows_ssh_override[config]'
           )
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
-          if ($ran.Count -ne $expected.Count -or $cases.Count -ne $ran.Count -or (Compare-Object $expected $ran)) {
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $posix = @(
+            'test_bucket_history[quote-queue]'
+            'test_bucket_history[quote-steward]'
+            'test_bucket_history[quote-overseer]'
+            'test_bucket_history[newline-queue]'
+            'test_bucket_history[newline-steward]'
+            'test_bucket_history[newline-overseer]'
+          )
+          if ($ran.Count -ne $expected.Count -or (Compare-Object $expected $ran) -or
+              $skips.Count -ne $posix.Count -or (Compare-Object $posix @($skips | ForEach-Object { $_.name })) -or
+              @($skips | Where-Object { $_.skipped.message -cne "POSIX filename" }).Count) {
             throw "Windows Git test selection changed: $ran"
           }
 

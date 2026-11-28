@@ -235,7 +235,7 @@ def _git(
         if os.name == "nt" and args[:1] in (("push",), ("pull",)):
             return procs.run_bounded(
                 ["git", "-C", str(repo), *args], timeout=timeout,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"},
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_SSH_COMMAND": "ssh -V"},
             )
         return procs.run_command(
             ["git", "-C", str(repo), *args],
