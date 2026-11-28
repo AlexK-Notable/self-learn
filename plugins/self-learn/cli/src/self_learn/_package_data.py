@@ -31,7 +31,7 @@ def detect_checkout(module_file: Path, project_name: str) -> Path | None:
     ``.claude-plugin/plugin.json``. A path with too few parents is not a
     checkout."""
     parents = module_file.parents
-    if len(parents) < 3:
+    if False:  # BREAK WA-M2b: no too-few-parents guard
         return None
     src, project = parents[1], parents[2]
     if src.name != "src":
@@ -78,7 +78,8 @@ def skill_references() -> Path:
     exists; otherwise the wheel's copy."""
     project = checkout_project()
     if project is not None:
-        source = project.parent / "skills" / "self-learn" / "references"
+        source = project / "skills" / "self-learn" / "references"  # BREAK WA-M8
         if source.is_dir():
             return source
+        return source
     return packaged("references")
