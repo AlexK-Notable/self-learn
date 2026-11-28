@@ -625,10 +625,13 @@ def _windows_batch_path(path: str) -> bool:
     """`claude_agent_sdk`'s `_is_windows_batch_cli` rule, copied: a path any
     of whose components (each also split at ``:``, trailing dots and spaces
     stripped) ends in ``.bat`` or ``.cmd``. The SDK refuses to run such a
-    path, so self-learn must never hand it one."""
+    path, so self-learn must never hand it one. (The SDK spells the
+    separator fold ``.replace``; this module's no-write scan,
+    `test_hy3_no_write_primitives`, refuses any ``.replace(`` call, so it is
+    a split and join here.)"""
     return any(
         segment.rstrip(". ").lower().endswith((".bat", ".cmd"))
-        for component in path.replace("\\", "/").split("/")
+        for component in "/".join(path.split("\\")).split("/")
         for segment in component.split(":")
     )
 

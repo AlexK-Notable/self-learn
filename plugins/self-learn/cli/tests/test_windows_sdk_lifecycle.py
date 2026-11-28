@@ -164,12 +164,15 @@ class SpawningClient(FakeSdkClient):
         self.on_drive, self.order = on_drive, order
         self.proc = None
         self.pids = None
+        self.watch = None
 
     async def connect(self):
         await super().connect()
         if self.order is not None:
             self.order.append("connect")
         self.proc, self.pids = _standin(self.workdir, self.exe, name="session-standin")
+        # Pinned at spawn, so a death is observed even after the last rung.
+        self.watch = _Watch(self.pids)
         self._transport._process.pid = self.pids[0]
 
     async def receive_response(self):
@@ -317,13 +320,13 @@ def test_windows_session_contains_the_child_and_teardown_kills_both(tmp_path, mo
         seen["contained"] = entry is not None and entry.handle is not None
         seen["sidecar"] = children.read_sidecar(lifecycle.worker.cache_dir(), "analyst")
         seen["live"] = procs.process_identity(child)
-        seen["alive"] = _Watch(client.pids).alive()
+        seen["alive"] = client.watch.alive()
 
     client = SpawningClient(exe, tmp_path / "work", messages=ok_messages(), on_drive=on_drive, order=order)
     monkeypatch.setattr(backend, "ClaudeSDKClient", lambda options: client)
     logs = []
     outcome = backend.SdkBackend().write_session(make_spec(home, log=logs.append))
-    watch = _Watch(client.pids)
+    watch = client.watch
     try:
         assert outcome.ok, (outcome.failure, logs)
         assert outcome.child_pid == client.pids[0]
@@ -382,7 +385,6 @@ def test_windows_containment_trouble_never_fails_the_session(tmp_path, monkeypat
     second = SpawningClient(exe, tmp_path / "work2", messages=ok_messages())
     monkeypatch.setattr(backend, "ClaudeSDKClient", lambda options: second)
     again = backend.SdkBackend().write_session(make_spec(home, log=logs.append))
-    watch = _Watch([*client.pids, *second.pids])
     try:
         assert outcome.ok and again.ok, (outcome.failure, again.failure, logs)
         messages = _registered_messages()
@@ -398,16 +400,17 @@ def test_windows_containment_trouble_never_fails_the_session(tmp_path, monkeypat
         }[fault]
         assert logs == [expected], logs
         # Whatever went wrong, the last rung still ended both sessions' trees.
-        _wait_for(lambda: not any(watch.alive()))
+        _wait_for(lambda: not any(client.watch.alive() + second.watch.alive()))
         if fault == "contain-raises":
             # No handle at spawn: the rung contained the recorded identity
             # again (expect=) and ended it.
             assert calls["contain"] == 3
         assert teardown.CONTAINED == {}
     finally:
-        watch.kill()
-        client.proc.wait(timeout=10)
-        second.proc.wait(timeout=10)
+        for spawned in (client, second):
+            if spawned.watch is not None:
+                spawned.watch.kill()
+                spawned.proc.wait(timeout=10)
 
 
 # --------------------------------------------------------------------------
