@@ -107,7 +107,7 @@ def _git_files(root: Path, prefixes: set[str], budget: list[int], *, deadline: f
     if budget[0] > PATH_SCAN_LIMIT or budget[1] > PATH_SCAN_BYTES:
         raise PathScanError("path glob scan budget exhausted")
     for name in names:
-        yield os.fsdecode(name)
+        yield gitops.decode_git_path(name)
 
 
 def task_paths(paths: list[str], root: Path, *, literal_paths: list[str] | None = None,

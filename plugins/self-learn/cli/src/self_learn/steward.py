@@ -4884,10 +4884,8 @@ def _verify_mutation_commit(
         return shown.returncode == 0 and shown.stdout.strip() == (
             f"{verbs.RESTORE_REGION_SUBJECT}{ref.record_id}"
         )
-    proc = gitops._git(  # noqa: SLF001 -- committed-effect verification
-        home, "diff-tree", "--no-commit-id", "--name-only", "-r", sha
-    )
-    paths = [line for line in proc.stdout.splitlines() if line.endswith(f"{ref.record_id}.md")]
+    changed = gitops.git_path_list(home, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha)
+    paths = [path for path in changed if path.endswith(f"{ref.record_id}.md")]
     if not paths:
         return False
     expected_status = {

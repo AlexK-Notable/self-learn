@@ -26,6 +26,7 @@ from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
+from . import gitops
 from .primitives import procs
 
 __all__ = ["OUTCOME_GROUPS", "SERIES_DAYS", "day_series"]
@@ -90,6 +91,16 @@ def _git(home: Path, *args: str, stdin: str | None = None) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
+def _history_bytes(home: Path, *args: str, stdin: bytes | None = None) -> bytes | None:
+    try:
+        proc = procs.run_bounded(
+            ["git", "-C", str(home), *args], input=stdin, timeout=_GIT_TIMEOUT, binary=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
 def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int, int]] | None, str | None]:
     """``[(pending, deferred)]`` per day end, or ``(None, why)``."""
     start = int(day_ends[0].timestamp()) - 86400
@@ -113,23 +124,24 @@ def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int,
         chosen.append(best)
     blobs_by_commit: dict[str, list[str]] = {}
     for sha in {c for c in chosen if c}:
-        tree = _git(home, "ls-tree", "-r", sha)
+        tree = _history_bytes(home, "ls-tree", "-r", "-z", sha)
         if tree is None:
             return None, "the ledger's git history could not be read"
         blobs = []
-        for line in tree.splitlines():
-            meta, _, path = line.partition("\t")
+        for entry in tree.split(b"\0"):
+            meta, _, path = entry.partition(b"\t")
             parts = meta.split()
-            if len(parts) == 3 and parts[1] == "blob" and _PENDING_PATH_RE.match(path):
-                blobs.append(parts[2])
+            if len(parts) == 3 and parts[1] == b"blob" and _PENDING_PATH_RE.fullmatch(gitops.decode_git_path(path)):
+                blobs.append(parts[2].decode("ascii"))
         blobs_by_commit[sha] = blobs
     wanted = sorted({b for blobs in blobs_by_commit.values() for b in blobs})
     status: dict[str, str] = {}
     if wanted:
-        out = _git(home, "cat-file", "--batch", stdin="\n".join(wanted) + "\n")
-        if out is None:
+        data = _history_bytes(home, "cat-file", "--batch", stdin=("\n".join(wanted) + "\n").encode("ascii"))
+        parsed = _batch_statuses(data, wanted) if data is not None else None
+        if parsed is None:
             return None, "the ledger's git history could not be read"
-        status = _batch_statuses(out)
+        status = parsed
     rows = []
     for sha in chosen:
         if sha is None:
@@ -140,20 +152,34 @@ def _queue_by_day(home: Path, day_ends: list[datetime]) -> tuple[list[tuple[int,
     return rows, None
 
 
-def _batch_statuses(out: str) -> dict[str, str]:
-    """``git cat-file --batch`` output -> ``{blob sha: frontmatter status}``.
-    Sizes are in bytes and the text is decoded, so each object is found by
-    its header line and read up to the next header, not by byte count."""
-    result: dict[str, str] = {}
-    header = re.compile(r"^([0-9a-f]{40}) blob \d+$", re.MULTILINE)
-    marks = list(header.finditer(out))
-    for i, m in enumerate(marks):
-        body = out[m.end(): marks[i + 1].start() if i + 1 < len(marks) else len(out)]
-        text = body.lstrip("\n")
-        fm = text[3:].split("\n---", 1)[0] if text.startswith("---") else text[:2000]
-        sm = _STATUS_RE.search(fm)
-        result[m.group(1)] = sm.group(1) if sm else ""
-    return result
+def _batch_statuses(data: bytes, wanted: list[str]) -> dict[str, str] | None:
+    """Consume complete cat-file frames. Missing objects have no size or body."""
+    result = {}
+    offset = 0
+    for oid in wanted:
+        end = data.find(b"\n", offset)
+        if end < 0:
+            return None
+        header = data[offset:end].split()
+        if len(header) != 3 or header[:2] != [oid.encode("ascii"), b"blob"] or not header[2].isdigit():
+            return None
+        # A size larger than the entire response cannot describe a complete blob.
+        if len(header[2]) > len(str(len(data))):
+            return None
+        offset = end + 1 + int(header[2])
+        if data[offset:offset + 1] != b"\n":
+            return None
+        body = data[end + 1:offset].decode("utf-8", "replace")
+        result[oid] = _frontmatter_status(body.replace("\r\n", "\n").replace("\r", "\n"))
+        offset += 1
+    return result if offset == len(data) else None
+
+
+def _frontmatter_status(body: str) -> str:
+    text = body.lstrip("\n")
+    fm = text[3:].split("\n---", 1)[0] if text.startswith("---") else text[:2000]
+    sm = _STATUS_RE.search(fm)
+    return sm.group(1) if sm else ""
 
 
 def _cases(home: Path) -> list[tuple[datetime, str, str]]:

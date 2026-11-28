@@ -5470,9 +5470,7 @@ _RECORD_ROOTS = ("skills", "projects", "user")
 def _record_at_commit(
     home: Path, sha: str, record_id: str
 ) -> tuple[Path, Record] | None:
-    paths = gitops._git(  # noqa: SLF001 -- immutable candidate content
-        home, "ls-tree", "-r", "--name-only", sha, "--", *_RECORD_ROOTS
-    ).stdout.splitlines()
+    paths = gitops.git_path_list(home, "ls-tree", "-r", "-z", "--name-only", sha, "--", *_RECORD_ROOTS)
     matches = [path for path in paths if Path(path).name == f"{record_id}.md"]
     if len(matches) != 1:
         return None

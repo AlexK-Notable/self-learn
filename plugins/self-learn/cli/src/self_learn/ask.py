@@ -74,7 +74,7 @@ from . import attention, attention_packet, invocation, model_failures, settings,
 from .invocation import failure_class
 from .invocation.contract import McpTool, McpToolset, ToolReply
 from .ledger import resolve_home
-from .primitives import chrono, fsops, locks, names
+from .primitives import chrono, fsops, locks, names, procs
 
 __all__ = [
     "ASK_DOCTRINE",
@@ -476,10 +476,16 @@ def _git_log(home: Path, argv_tail: list[str]) -> str:
     ``gitops``, follow-ups 2.)"""
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_PAGER": "cat"}
     try:
-        done = subprocess.run(
-            ["git", "-C", str(home), "log", *argv_tail], capture_output=True, text=True,
-            timeout=10, env=env, stdin=subprocess.DEVNULL, check=False,
-        )
+        if os.name == "nt":
+            done = procs.run_bounded(
+                ["git", "-C", str(home), "--literal-pathspecs", "log", "--encoding=UTF-8", *argv_tail],
+                env=env, timeout=10,
+            )
+        else:
+            done = subprocess.run(
+                ["git", "-C", str(home), "log", *argv_tail], capture_output=True, text=True,
+                timeout=10, env=env, stdin=subprocess.DEVNULL, check=False,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"git log failed: {type(exc).__name__}"
     return done.stdout if done.returncode == 0 else f"git log failed: {done.stderr.strip()[:300]}"
@@ -663,7 +669,7 @@ class AskTools:
         count = min(int(limit), HISTORY_MAX) if isinstance(limit, int) and limit > 0 else HISTORY_MAX
         fmt = ["-n", str(count), "--format=%h %aI %s%n%(trailers:unfold)%n"]
         path: Path | None = None
-        if target.startswith("/") or target.startswith("~"):
+        if target.startswith("/") or target.startswith("~") or (os.name == "nt" and Path(target).is_absolute()):
             real = Path(target).expanduser().resolve()
             if not (real == self.home.resolve() or self.home.resolve() in real.parents):
                 raise _Refused("ledger_history: the path must be inside the ledger")

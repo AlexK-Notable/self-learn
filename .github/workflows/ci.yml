@@ -119,6 +119,54 @@ jobs:
             }
           }
 
+      - name: Windows Git history and FTS5 contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "git-history-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_git_history.py -p no:cacheprovider -q -rA -o xfail_strict=true --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_daily_history'
+            'test_windows_history_counts_quoted_bucket_and_framed_blob'
+            'test_selected_paths'
+            'test_review_commit_bytes'
+            'test_windows_literal_status_and_diff'
+            'test_allow_empty_leaves_no_matching_sibling_staged'
+            'test_fts5_round_trip'
+            'test_push_local_bare'
+            'test_windows_unreachable_push_env'
+            'test_bucket_history[ascii-queue]'
+            'test_bucket_history[ascii-steward]'
+            'test_bucket_history[ascii-overseer]'
+            'test_bucket_history[unicode-queue]'
+            'test_bucket_history[unicode-steward]'
+            'test_bucket_history[unicode-overseer]'
+            'test_missing_history_blob'
+            'test_undecodable_git_names'
+            'test_windows_hook_removal'
+            'test_windows_notice_file'
+            'test_windows_ask_history'
+            'test_windows_ssh_override[default]'
+            'test_windows_ssh_override[env]'
+            'test_windows_ssh_override[config]'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $posix = @(
+            'test_bucket_history[quote-queue]'
+            'test_bucket_history[quote-steward]'
+            'test_bucket_history[quote-overseer]'
+            'test_bucket_history[newline-queue]'
+            'test_bucket_history[newline-steward]'
+            'test_bucket_history[newline-overseer]'
+          )
+          if ($ran.Count -ne $expected.Count -or (Compare-Object $expected $ran) -or
+              $skips.Count -ne $posix.Count -or (Compare-Object $posix @($skips | ForEach-Object { $_.name })) -or
+              @($skips | Where-Object { $_.skipped.message -cne "POSIX filename" }).Count) {
+            throw "Windows Git test selection changed: $ran"
+          }
+
       - name: Windows names and folders contracts
         working-directory: plugins/self-learn/cli
         run: |
