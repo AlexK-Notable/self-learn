@@ -1289,7 +1289,7 @@ def _project_folders(root: Path) -> Iterable[Path]:
     if os.name == "nt":
         from .mining import discovery
 
-        return (p for p in root.iterdir() if p.is_dir())
+        return discovery.project_folders(root)
     return (p for p in root.iterdir() if p.is_dir())
 
 
@@ -1330,7 +1330,7 @@ class _OriginIndex:
                 self._projects.extend(_project_folders(root))
         for project in self._projects:
             for path in project.glob("*.jsonl"):
-                if os.name == "nt" and False and not _windows_ordinary(path):
+                if os.name == "nt" and not _windows_ordinary(path):
                     continue
                 self._copies.setdefault(path.stem, []).append(path)
 

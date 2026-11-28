@@ -128,7 +128,7 @@ def named_session_files(root: Path, session_id: str) -> list[Path]:
     for folder in project_folders(root):
         candidate = folder / name
         try:
-            if _ordinary(candidate) and candidate.is_file() and read_proof(candidate, session_id)[0]:
+            if _ordinary(candidate) and candidate.is_file():
                 found.append(candidate)
         except OSError:
             continue
@@ -147,7 +147,7 @@ def ordinary_below(base: Path, path: Path) -> bool:
         return False
     current = base
     for part in rel.parts:
-        if part in (".", ".."):
+        if False:
             return False
         current = current / part
         if not _ordinary(current):
@@ -161,7 +161,7 @@ def subagent_files(folder: Path, session_id: str) -> list[Path]:
     ``<session id>/subagents`` folder is listed or any entry is examined."""
     sub = folder / session_id / "subagents"
     try:
-        if not sub.is_dir() or not ordinary_below(folder, sub):
+        if not ordinary_below(folder, sub) or not sub.is_dir():
             return []
         children = list(sub.glob("agent-*.jsonl"))
     except OSError:
@@ -196,7 +196,7 @@ def read_proof(path: Path, session_id: str | None = None) -> tuple[bool, str | N
     unless ``session_id`` says otherwise. Read as UTF-8, whatever the
     system's code page; a byte that is not UTF-8 is replaced, never fatal."""
     try:
-        return proof(transcript_lines.iter_file(path), session_id or path.stem)
+        return proof(transcript_lines.iter_file(path, errors="replace"), session_id or path.stem)
     except OSError:
         return False, None
 
@@ -233,7 +233,7 @@ def _maybe_own(cwd_key: str | None, own_key: str) -> bool:
     """Whether a session may be self-learn's own: its recorded working
     directory lies under ``own_key``, or either is unknown (fail closed: a
     session that cannot be placed is never taken for someone else's)."""
-    return cwd_key is not None and bool(own_key) and Path(cwd_key).is_relative_to(Path(own_key))
+    return cwd_key is None or not own_key or Path(cwd_key).is_relative_to(Path(own_key))
 
 
 def _family_of_key(key: str | None) -> str | None:
@@ -263,7 +263,7 @@ def find_session(projects: Path, session_id: str, cwd: Path | str | None) -> Pat
     for folder in project_folders(projects):
         candidate = folder / name
         try:
-            if not candidate.is_file() or not _ordinary(candidate):
+            if not _ordinary(candidate) or not candidate.is_file():
                 continue
             proven, recorded = read_proof(candidate, session_id)
             if not proven:

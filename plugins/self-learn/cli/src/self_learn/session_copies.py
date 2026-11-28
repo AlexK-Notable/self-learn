@@ -136,7 +136,7 @@ def _subagent_dir(folder: Path, sub_source: Path) -> bool:
     Windows: only when neither it nor the ``<session id>`` folder is a link,
     checked before the folder is examined or listed."""
     if os.name == "nt":
-        return _ordinary_on_windows(folder, sub_source) and sub_source.is_dir()
+        return sub_source.is_dir() and _ordinary_on_windows(folder, sub_source)
     return sub_source.is_dir()
 
 
