@@ -309,10 +309,11 @@ def test_windows_request_stop_reaches_another_process(tmp_path):
 @windows
 def test_windows_ask_honours_a_request_made_before_the_watch(monkeypatch, home, item):
     """Gate MAJOR 1: a stop already waiting when the watch starts is caught
-    by the turn (exit 7, "stopped by you", an `interrupted` event), never
-    raised out of it."""
+    by the turn (exit 7, an `interrupted` event, a sealed note), never
+    raised out of it. The note is "stopped before it answered": a turn
+    drops a Stop marker left from before it began (unchanged Linux code),
+    so only a marker written during the turn reads as "stopped by you"."""
     before = signal.getsignal(signal.SIGBREAK)
-    ask.request_stop(home, item)
     assert stop_request.request_stop(os.getpid()) is True  # nobody watching yet
     backend = _Blocks()
     monkeypatch.setattr(ask, "_backend", backend)
@@ -322,7 +323,7 @@ def test_windows_ask_honours_a_request_made_before_the_watch(monkeypatch, home, 
     assert time.monotonic() - started < 20
     assert code == ask.EXIT_INTERRUPTED
     assert _events(out)[-1]["code"] == "interrupted"
-    assert ask.workspace.rows(home, item)[-1]["text"] == ask.STOPPED_NOTE
+    assert ask.workspace.rows(home, item)[-1]["text"] == ask.INTERRUPTED_NOTE
     assert _stop_files() == []
     assert signal.getsignal(signal.SIGBREAK) is before
 
