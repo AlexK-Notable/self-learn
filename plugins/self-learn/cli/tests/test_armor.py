@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "8ba4ebc"
+ANCHOR = "bb35bce"
 
 
 # ===================================================================== #
@@ -342,6 +342,12 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation_sdk.py": Behaviour(
         nodes=139, dump_sha="972fd53200074d879f5cd4ef85282573a75e0cfca5a0deacb2c808fecc1514b7",
+        edited={
+            "func:test_kl4_hang_sigterm_ignored_child_is_gone_after_run_sync_returns":
+                "2026-11-28 U-sdk §3.7 K-2b/KL4: reap an exited child within the existing PID-check deadline.",
+            "func:test_kl8_orphan_sweep_kills_matching_and_spares_non_matching":
+                "2026-11-28 U-sdk §3.7 K-5/KL8: run a native Python sleeper named claude and require SIGKILL.",
+        },
     ),
     # 2026-11-01, attention round lane `surfaces` (design r2 §3.9, answer 1;
     # 03-decisions.md S-127): the worker's popups P1 and P2 were
@@ -1015,9 +1021,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-11-28 U-sdk §3.7 K-2b/K-5: 0 -> 2; KL4 reaps its exited child and "
+            "KL8 uses a native interpreter for the matching orphan. Previous entry: "
             "2026-11-28, transcribed at ANCHOR 8ba4ebc from this module's own "
             "STALE refusal (S-167 names landing): 1 -> 0; S-166's HY4 edit "
             "is anchor-side now. Previous entry: "
@@ -1121,6 +1129,8 @@ MEASURED: dict[str, Measured] = {
         value=170,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-11-28 U-sdk §3.7 K-2b/K-5: stays 170; both KL4 and KL8 already differ "
+            "from the retired control c3b48e7. Previous entry: "
             "2026-11-25 U-attrib §3.4 AD8/HY4 (S-166): 169 -> 170; HY4 now checks the staged "
             "replacement facade leaf. Previous entry: "
             "2026-11-25 08 §7.1 (S-164): the absorbed-race holder now uses the lock facade. Previous entry: "
