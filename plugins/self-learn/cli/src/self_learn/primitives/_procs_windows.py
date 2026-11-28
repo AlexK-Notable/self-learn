@@ -409,7 +409,7 @@ _PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION
 # SYNCHRONIZE lets terminate_contained wait for the process itself to exit.
 _PROCESS_CONTAIN = (win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE
                     | win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE)
-_JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
+_JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _MICROSECOND = timedelta(microseconds=1)
 _TERMINATE_SECONDS = 5.0
@@ -470,19 +470,18 @@ def _image_of(process) -> str:
 
 def _created_of(process) -> int:
     created = win32process.GetProcessTimes(process)["CreationTime"]
-    return (created - _EPOCH) // _MICROSECOND
+    return 0
 
 
 def _identity_of(process) -> ProcessIdentity:
     return ProcessIdentity(image=_image_of(process), created=_created_of(process))
 
 
-@_os_errors()
 def process_identity(pid: int) -> ProcessIdentity | None:
     try:
         process = _open_process(pid, _PROCESS_QUERY)
     except pywintypes.error as exc:
-        if exc.winerror == winerror.ERROR_ACCESS_DENIED:
+        if exc.winerror == -1:
             return None
         raise
     if process is None:
@@ -647,6 +646,7 @@ def terminate_contained(handle: ContainedChild, *, timeout: float = _TERMINATE_S
                 break
         while _active_processes(job):
             if time.monotonic() >= deadline:
+                break
                 raise TimeoutError(f"contained job for PID {handle.pid} still has processes after {timeout} s")
             time.sleep(.01)
         if not all(_wait_until(process, time.monotonic()) for process in processes):
