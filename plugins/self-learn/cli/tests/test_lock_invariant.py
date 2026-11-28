@@ -129,6 +129,9 @@ _STREAMS = ("buf", "fh", "f", "sys", "stderr", "stdout", "out", "handle", "proc"
 #: :func:`test_the_exemption_list_cannot_rot`), so a rename or a deletion
 #: cannot leave a stale exemption quietly widening the hole.
 NOT_REPO_TRUTH = {
+    # S-179: a Windows run executes a private copy of the verified
+    # bytes from <runtime root>/script-runs/<random>/, outside every repository.
+    "skill_scripts._private_snapshot": "runtime root: <runtime>/script-runs/<random>/<name>, the private copy of verified script bytes one Windows run executes, removed afterwards",
     # 2026-11-23 S-163, 02-schema §3a.6: what the sweep of the harness stores
     # read, kept between processes. Under $XDG_CACHE_HOME/self-learn/provenance/,
     # outside every ledger and host; rebuilt from the transcripts when absent.
@@ -327,6 +330,9 @@ NOT_REPO_TRUTH = {
     # Humane UI lane 5 (S-140): the summary verb's cache files.
     "summarise._write_cache": "XDG cache: <cache>/summaries/pending/<kind>/<sha256>.json, a summary written while the ledger is STOPPED (summarise.save moves it into the ledger under the lock and removes it), and <cache>/summaries/journal.jsonl, one row per model call with its cost; never ledger truth (the saved summary is the ledger's summaries/<kind>/<sha256>.json)",
     "summarise._drop_cache": "XDG cache: unlinks <cache>/summaries/pending/<kind>/<sha256>.json once summarise.save has committed it into the ledger; never ledger truth",
+    # Parity plan 6C (Windows cancel): the stop files of `ask` and `summarise`.
+    "stop_request._write_stop": "runtime root (XDG_RUNTIME_DIR/self-learn, else the XDG cache root): stop-requests/<pid>-<creation>.{stop,watch}, a Windows request that the running ask or summarise with that process id stop, and the marker saying that process is watching for one; never ledger truth",
+    "stop_request._drop_stop": "runtime root (XDG_RUNTIME_DIR/self-learn, else the XDG cache root): unlinks stop-requests/<pid>-<creation>.{stop,watch} when the watched command ends, or a stale one named for a process that no longer runs under that creation time; never ledger truth",
     "workspace._keep_pending": "XDG cache: <cache>/workspace/<item-id>/pending.jsonl, workspace rows kept while the ledger is STOPPED; workspace.append seals them into the ledger under the lock and removes the file",
     # Attention round, answers lane (design r2 §3.4.7, §4.4): approved
     # work's cache files. The approval and its outcome are ledger rows

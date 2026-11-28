@@ -459,6 +459,100 @@ jobs:
             throw "Unexpected transcript test selection or skip: $ran"
           }
 
+      - name: Windows hook rule evaluator
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "hook-rules.xml"
+          uv run --no-sync python -m pytest tests/test_hook_rules.py -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $allowed = @(
+            "Linux differential: compares against the generated Bash script"
+            "Linux only: reads the Linux test modules the fixtures come from"
+          )
+          $unexpected = @($skips | Where-Object { $allowed -cnotcontains $_.skipped.message })
+          if ($ran.Count -ne 323 -or $skips.Count -ne 208 -or $unexpected.Count -ne 0) {
+            throw "Expected 323 executed hook-rule tests and 208 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          }
+
+      - name: Windows cancel and probe contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "cancel-probe-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_cancel_probes.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_stop_files_are_named_by_pid_and_creation_under_the_runtime_root'
+            'test_windows_ask_stops_on_request_stop_and_leaves_no_stop_file'
+            'test_windows_summarise_stops_on_request_stop_and_leaves_no_stop_file'
+            'test_windows_ctrl_break_stops_summarise'
+            'test_windows_stale_stop_file_is_ignored_and_cleared'
+            'test_windows_request_before_the_watch_is_honoured'
+            'test_windows_request_stop_reaches_another_process'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[systemd-show]'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[package]'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[git-file]'
+            'test_windows_platform_unavailable_rows_are_never_broken'
+            'test_windows_mount_table_reads_no_linux_path'
+            'test_windows_ask_schema_omits_probe_and_keeps_every_other_tool'
+            'test_windows_ask_honours_a_request_made_before_the_watch'
+            'test_windows_ctrl_break_stops_ask'
+            'test_windows_ask_catches_a_stop_delivered_while_the_watch_starts'
+            'test_windows_ask_catches_a_stop_racing_the_end_of_the_turn'
+            'test_windows_request_to_a_launcher_before_the_watch_is_honoured_once'
+            'test_windows_a_watch_interrupted_while_starting_is_undone'
+            'test_windows_a_watch_interrupted_while_closing_is_still_undone'
+            'test_windows_request_passes_over_a_process_it_cannot_read'
+            'test_windows_request_does_not_follow_a_reused_parent_pid'
+            'test_windows_ancestor_walk_stops_at_a_younger_parent'
+            'test_windows_watch_refuses_a_linked_stop_folder_before_touching_it'
+            'test_windows_doctor_premises_reports_platform_probes_and_no_broken'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 4 -or
+              @($skips | Where-Object { $_.skipped.message -cne "Linux cancel contract" }).Count) {
+            throw "Windows cancel test selection changed: ran $ran, skipped $($skips.Count)"
+          }
+
+      - name: Windows skill script contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "skill-script-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_skill_scripts.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_windows_lifecycle_python_and_bash[git-bash]'
+            'test_windows_lifecycle_python_and_bash[no-git-bash]'
+            'test_windows_runs_a_private_snapshot_of_the_verified_bytes'
+            'test_windows_interpreter_settings_are_not_inherited'
+            'test_windows_stdin_only_on_request'
+            'test_windows_changed_copy_is_refused'
+            'test_windows_restored_index_cannot_revive_a_deactivation'
+            'test_windows_junction_in_place_of_scripts_folder_is_refused'
+            'test_windows_redirect_above_the_skill_folder[same-bytes]'
+            'test_windows_redirect_above_the_skill_folder[changed-bytes]'
+            'test_windows_cross_volume_quarantine_moves_the_entry_never_its_contents'
+            'test_windows_crlf_digest_contract'
+            'test_windows_converted_line_endings_are_refused'
+            'test_windows_show_reads_exact_bytes_from_a_checked_path'
+            'test_windows_list_survives_an_unavailable_host'
+            'test_windows_device_names_and_timeouts_are_refused'
+            'test_windows_production_defaults_refuse_run'
+            'test_windows_git_bash_discovery'
+          )
+          $posix = @('test_linux_surface_has_no_windows_launcher', 'test_linux_checkout_mode_decides_the_mode_check')
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or (Compare-Object -CaseSensitive $posix @($skips | ForEach-Object { $_.name })) -or
+              @($skips | Where-Object { $_.skipped.message -cne 'Linux skill script surface' }).Count) {
+            throw "Windows skill script test selection changed: $ran"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
@@ -531,6 +625,27 @@ jobs:
       - name: CLI test collection check
         working-directory: plugins/self-learn/cli
         run: uv run --no-sync pytest --collect-only -q tests/
+
+      # The hook rule evaluator against the real generated Bash scripts, jq,
+      # grep and awk (lane 5R). Required: a drift between the evaluator and
+      # the scripts must stop a landing, so no test may skip here.
+      - name: Hook rule evaluator against the generated scripts
+        working-directory: plugins/self-learn/cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq gawk locales
+          if ! locale -a | grep -qix 'en_US.utf8'; then sudo locale-gen en_US.UTF-8; fi
+          jq --version; grep --version | head -1; locale -a
+          report="${RUNNER_TEMP}/hook-rules-linux.xml"
+          uv run --no-sync pytest tests/test_hook_rules.py -p no:cacheprovider -q -rA --junitxml="$report"
+          uv run --no-sync python -c '
+          import sys, xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          print(f"{len(cases)} hook-rule tests, {len(skipped)} skipped")
+          if len(cases) != 531 or skipped:
+              sys.exit(f"expected 531 hook-rule tests and no skips; skipped: {skipped[:20]}")
+          ' "$report"
 
   linux-suite:
     runs-on: ubuntu-latest
