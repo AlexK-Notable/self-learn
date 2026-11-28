@@ -518,6 +518,41 @@ jobs:
             throw "Windows cancel test selection changed: ran $ran, skipped $($skips.Count)"
           }
 
+      - name: Windows skill script contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "skill-script-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_skill_scripts.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_windows_lifecycle_python_and_bash[git-bash]'
+            'test_windows_lifecycle_python_and_bash[no-git-bash]'
+            'test_windows_runs_a_private_snapshot_of_the_verified_bytes'
+            'test_windows_interpreter_settings_are_not_inherited'
+            'test_windows_stdin_only_on_request'
+            'test_windows_changed_copy_is_refused'
+            'test_windows_restored_index_cannot_revive_a_deactivation'
+            'test_windows_junction_in_place_of_scripts_folder_is_refused'
+            'test_windows_redirect_above_the_skill_folder[same-bytes]'
+            'test_windows_redirect_above_the_skill_folder[changed-bytes]'
+            'test_windows_cross_volume_quarantine_moves_the_entry_never_its_contents'
+            'test_windows_crlf_digest_contract'
+            'test_windows_converted_line_endings_are_refused'
+            'test_windows_show_reads_exact_bytes_from_a_checked_path'
+            'test_windows_list_survives_an_unavailable_host'
+            'test_windows_device_names_and_timeouts_are_refused'
+            'test_windows_production_defaults_refuse_run'
+            'test_windows_git_bash_discovery'
+          )
+          $posix = @('test_linux_surface_has_no_windows_launcher', 'test_linux_checkout_mode_decides_the_mode_check')
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or (Compare-Object -CaseSensitive $posix @($skips | ForEach-Object { $_.name })) -or
+              @($skips | Where-Object { $_.skipped.message -cne 'Linux skill script surface' }).Count) {
+            throw "Windows skill script test selection changed: $ran"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
