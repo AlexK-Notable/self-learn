@@ -53,6 +53,31 @@ jobs:
         working-directory: plugins/self-learn/ui
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
 
+      - name: Windows canon destinations
+        working-directory: plugins/self-learn/cli
+        run: |
+          $env:WIN_PD_OVERRIDE_LOCAL_APPDATA = Join-Path $env:RUNNER_TEMP "canon-local"
+          $env:WIN_PD_OVERRIDE_APPDATA = Join-Path $env:RUNNER_TEMP "canon-roaming"
+          $report = Join-Path $env:RUNNER_TEMP "canon-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_canon.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $native = @(
+            'test_windows_routes_keep_bytes_outside_the_block'
+            'test_windows_retire_and_replace_leave_neighbours'
+            'test_windows_cross_drive_pointer'
+            'test_windows_memory_prune_keeps_index_line_endings'
+            'test_windows_display_labels_use_slashes'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $missing = @($native | Where-Object { $ran -cnotcontains $_ })
+          if ($missing.Count -or $ran.Count -ne 17 -or $skips.Count -ne 1 -or
+              $skips[0].name -cne 'test_posix_compile_writes_the_compiler_text' -or
+              $skips[0].skipped.message -cne 'POSIX canon contract') {
+            throw "Unexpected canon test selection: ran $($ran -join ', '); missing $($missing -join ', '); skipped $($skips.Count)"
+          }
+
       - name: Native capture integration
         working-directory: plugins/self-learn/cli
         run: |

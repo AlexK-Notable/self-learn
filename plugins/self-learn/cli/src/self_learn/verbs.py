@@ -527,6 +527,8 @@ class VerbResult:
             # branch ran.
             try:
                 target_str = "~/" + str(target.relative_to(names.user_home()))
+                if os.name == "nt":  # `~/.claude/CLAUDE.md`, as on POSIX
+                    target_str = "~/" + target.relative_to(names.user_home()).as_posix()
             except ValueError:
                 target_str = str(target)
         if file_words is not None:
@@ -4526,6 +4528,8 @@ def _retire_reference_host_phase(
             try:
                 gitops.stage(spec.host_path, changed)  # a deleted shelf is skipped here ...
                 rel = ref_path.relative_to(spec.host_path)
+                if os.name == "nt":  # the commit subject names it with slashes
+                    rel = rel.as_posix()
                 return gitops.commit(  # ... and its deletion committed by the pathspec
                     spec.host_path,
                     f"self-learn: apply {record_id} → {rel} (reference retired)",
@@ -5070,6 +5074,8 @@ def _tilde(path: Path) -> str:
     """*path* as ``~/…`` when it is under the home directory (a note may be
     pasted into a public issue, NIT N4's reason), else as it is."""
     try:
+        if os.name == "nt":  # `~/.claude/skills/<name>`, as on POSIX
+            return "~/" + path.relative_to(names.user_home()).as_posix()
         return "~/" + str(path.relative_to(names.user_home()))
     except ValueError:
         return str(path)
@@ -5813,6 +5819,8 @@ def _host_phase(
                     try:
                         gitops.stage(spec.host_path, host_paths)
                         rel = host_paths[0].relative_to(spec.host_path)
+                        if os.name == "nt":  # the commit subject names it with slashes
+                            rel = rel.as_posix()
                         host_sha = gitops.commit(
                             spec.host_path,
                             f"self-learn: apply {record_id} → {rel} ({spec.destination})",
