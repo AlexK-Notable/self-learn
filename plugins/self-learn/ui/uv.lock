@@ -1085,8 +1085,11 @@ requires-dist = [
     { name = "portalocker", marker = "sys_platform == 'win32'", specifier = ">=4.4.2" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
+    { name = "winrt-runtime", marker = "sys_platform == 'win32' and extra == 'desktop'", specifier = ">=4,<5" },
+    { name = "winrt-windows-data-xml-dom", marker = "sys_platform == 'win32' and extra == 'desktop'", specifier = ">=4!10.0" },
+    { name = "winrt-windows-ui-notifications", marker = "sys_platform == 'win32' and extra == 'desktop'", specifier = ">=4!10.0" },
 ]
-provides-extras = ["sdk"]
+provides-extras = ["sdk", "desktop"]
 
 [package.metadata.requires-dev]
 dev = [

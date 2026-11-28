@@ -553,6 +553,48 @@ jobs:
             throw "Windows skill script test selection changed: $ran"
           }
 
+      - name: Windows desktop notification contracts, without and with the desktop extra
+        working-directory: plugins/self-learn/cli
+        run: |
+          $native = @(
+            'test_windows_extra_matches_the_step'
+            'test_windows_sender_passes_the_helper_its_arguments_as_a_list'
+            'test_windows_sender_never_raises_into_its_caller[oserror]'
+            'test_windows_sender_never_raises_into_its_caller[timeout]'
+            'test_windows_sender_never_raises_into_its_caller[other]'
+            'test_windows_launcher_is_a_gui_program'
+            'test_windows_helper_exits_quietly_within_the_bound[pythonw.exe]'
+            'test_windows_helper_exits_quietly_within_the_bound[python.exe]'
+            'test_windows_hostile_text_crosses_the_command_line_verbatim'
+            'test_windows_refused_open_exits_2_and_logs'
+          )
+          foreach ($mode in 'absent', 'present') {
+            $env:SELF_LEARN_NOTIFY_TEST_EXTRA = $mode
+            if ($mode -eq 'present') {
+              $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "notify-desktop-env"
+              uv sync --locked --extra desktop
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            }
+            $report = Join-Path $env:RUNNER_TEMP "notify-contracts-$mode.xml"
+            uv run --no-sync python -m pytest tests/test_windows_notify.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+            $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+            $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+            $linux = @($skips | Where-Object { $_.name -ceq 'test_linux_send_keeps_the_companion_script' -and $_.skipped.message -ceq 'Linux notification contract' })
+            $winrt = @($ran | Where-Object { $_ -cmatch '^test_windows_toast_document_loads_in_winrt\[' })
+            $noextra = @($skips | Where-Object { $_.name -cmatch '^test_windows_toast_document_loads_in_winrt\[' -and $_.skipped.message -ceq 'desktop extra not installed' })
+            $missing = @($native | Where-Object { $ran -cnotcontains $_ })
+            $expectRan = if ($mode -eq 'present') { 63 } else { 56 }
+            $expectSkips = if ($mode -eq 'present') { 1 } else { 8 }
+            $expectWinrt = if ($mode -eq 'present') { 7 } else { 0 }
+            $expectNoextra = if ($mode -eq 'present') { 0 } else { 7 }
+            if ($missing.Count -or $ran.Count -ne $expectRan -or $skips.Count -ne $expectSkips -or
+                $linux.Count -ne 1 -or $winrt.Count -ne $expectWinrt -or $noextra.Count -ne $expectNoextra) {
+              throw "Unexpected notification test selection ($mode): ran $($ran.Count), skipped $($skips.Count), missing $($missing -join ', ')"
+            }
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(

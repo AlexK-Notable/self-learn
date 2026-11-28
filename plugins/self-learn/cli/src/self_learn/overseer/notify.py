@@ -3,6 +3,7 @@ one popup self-learn still shows: a login hold (attention round, answer 1)."""
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -91,6 +92,9 @@ def send(
         return
     if worker._notifications_suppressed(home):
         return
+    if os.name == "nt":
+        _send_windows(_line(cue, summary, ids))
+        return
     helper = shutil.which("self-learn-notify")
     line = _line(cue, summary, ids)
     if not helper:
@@ -108,3 +112,32 @@ def send(
         )
     except OSError:
         worker.log("notify: failed to spawn self-learn-notify")
+
+
+#: The toast's title on Windows; the Linux popup's summary is the same word.
+WINDOWS_TITLE = "self-learn"
+
+
+def _send_windows(line: str) -> None:
+    """Windows: show the popup through ``self_learn.notify_desktop``, run by
+    ``pythonw.exe`` beside this interpreter (no console window), with its
+    arguments as a list through the process facade (never a shell). The
+    facade has no detached launch on this base, so this is the bounded
+    launch: the helper posts its toast and exits (at most
+    ``DEADLINE_SECONDS``), and the facade kills it after
+    ``CALLER_TIMEOUT_SECONDS``. A click needs no process: the toast opens
+    the inbox URL itself. Nothing reaches the caller but a log line."""
+    from .. import notify_desktop
+    from ..primitives import procs
+
+    launcher = notify_desktop.pythonw_beside()
+    if launcher is None:
+        worker.log("notify: pythonw.exe not found beside the interpreter — notification skipped")
+        return
+    argv = notify_desktop.helper_argv(
+        launcher, title=WINDOWS_TITLE, body=line, url=notify_desktop.ui_url(POPUP_PAGE)
+    )
+    try:
+        procs.run_bounded(argv, timeout=notify_desktop.CALLER_TIMEOUT_SECONDS)
+    except Exception as exc:
+        worker.log(f"notify: the Windows notification helper failed ({type(exc).__name__})")

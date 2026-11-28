@@ -23,6 +23,16 @@ dependencies = [
 # rather than becoming an error.
 [project.optional-dependencies]
 sdk = []
+# Windows toasts (parity plan 1.11, row 7N): the PyWinRT packages the
+# helper `self_learn.notify_desktop` writes toast XML with. desktop-notifier
+# (the plan's choice 6.7) builds on these same packages but cannot open a URL
+# after its process has exited, which a click on the toast needs. Every entry
+# carries the Windows marker, so this extra installs nothing on Linux.
+desktop = [
+    "winrt-runtime>=4,<5 ; sys_platform == 'win32'",
+    "winrt-Windows.UI.Notifications>=4!10.0 ; sys_platform == 'win32'",
+    "winrt-Windows.Data.Xml.Dom>=4!10.0 ; sys_platform == 'win32'",
+]
 
 [project.scripts]
 self-learn = "self_learn.cli:entrypoint"
