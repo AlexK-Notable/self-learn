@@ -70,7 +70,8 @@ def _stdin(children, inherit):
 
 
 def _launch(handles, argv, cwd, env, input_data, inherit):
-    executable = shutil.which(argv[0], path=os.pathsep.join(os.get_exec_path(env)))
+    program = os.path.join(cwd, argv[0]) if cwd and os.path.dirname(argv[0]) else argv[0]
+    executable = shutil.which(program, path=os.pathsep.join(os.get_exec_path(env)))
     if executable is None:
         raise FileNotFoundError(argv[0])
     # CreateProcess can hand batch files to cmd.exe even with shell=False.
@@ -132,7 +133,10 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             with changed:
                 if failures:
                     return
-                size = _CHUNK if limit is None else min(_CHUNK, limit - total + 1)
+                # The other reader can hold one older request. Leave one byte
+                # for this reader's N+1 probe: at most limit + _CHUNK in flight
+                # and retained together, even when both pipes complete at once.
+                size = _CHUNK if limit is None else min(_CHUNK - 1, limit - total + 1)
             # A synchronous anonymous-pipe read returns available bytes immediately.
             _, chunk = win32file.ReadFile(handle, size)
             if not chunk:

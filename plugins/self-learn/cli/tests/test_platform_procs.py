@@ -19,7 +19,9 @@ from uuid import uuid4
 
 import pytest
 
-from self_learn import worker
+if sys.platform == "linux":
+    from self_learn import worker
+
 from self_learn.primitives import procs
 
 
@@ -515,7 +517,15 @@ def test_git_text_and_byte_exact_output(tmp_path):
 
 
 @windows
-def test_closed_pipes_live_leader(tmp_path):
+def test_closed_pipes_live_leader(tmp_path, monkeypatch):
+    import win32job
+    # Observe the EOFs at the deadline, before termination can close a pipe.
+    terminate = win32job.TerminateJobObject
+    at_deadline = []
+    def observe(*args):
+        at_deadline.append([t.name for t in threading.enumerate() if t.name.startswith("bounded-")])
+        return terminate(*args)
+    monkeypatch.setattr(win32job, "TerminateJobObject", observe)
     ready = tmp_path / "ready"
     argv = _python("""
         import os, sys, time
@@ -529,7 +539,9 @@ def test_closed_pipes_live_leader(tmp_path):
         procs.run_bounded(argv, binary=True, max_output_bytes=1, timeout=2)
     exc = caught.value
     assert (exc.cmd, exc.timeout, exc.output, exc.stderr) == (argv, 2, None, None)
-    assert not procs.pid_alive(int(ready.read_text()))
+    assert at_deadline == [[]]
+    pid = int(ready.read_text())
+    _wait_for(lambda: not procs.pid_alive(pid))
     _assert_no_pipe_threads()
 
 
@@ -695,3 +707,76 @@ def test_pid_probe_alive_then_reaped(tmp_path, monkeypatch):
         request.write_bytes(b"stop")
         peer.wait(timeout=5)
     assert not procs.pid_alive(peer.pid)
+
+
+@windows
+def test_only_child_pipe_ends_inherit_and_all_handles_close(monkeypatch):
+    import pywintypes
+    import win32api
+    import win32job
+    import win32pipe
+    import win32process
+    import winerror
+
+    jobs, pipes, processes = [], [], []
+    create_job = win32job.CreateJobObject
+    create_pipe = win32pipe.CreatePipe
+    create_process = win32process.CreateProcess
+    def job(*args):
+        handle = create_job(*args)
+        jobs.append(handle)
+        return handle
+    def pipe(*args):
+        pair = create_pipe(*args)
+        pipes.extend(pair)
+        return pair
+    def process(*args):
+        startup = args[-1]
+        child_handles = {int(h) for h in (startup.hStdInput, startup.hStdOutput, startup.hStdError)}
+        inheritable = {int(h) for h in [*pipes, *jobs] if os.get_handle_inheritable(int(h))}
+        assert inheritable == child_handles
+        limits = win32job.QueryInformationJobObject(jobs[0], win32job.JobObjectExtendedLimitInformation)
+        assert limits["BasicLimitInformation"]["LimitFlags"] & win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        result = create_process(*args)
+        processes.extend(result[:2])
+        return result
+    monkeypatch.setattr(win32job, "CreateJobObject", job)
+    monkeypatch.setattr(win32pipe, "CreatePipe", pipe)
+    monkeypatch.setattr(win32process, "CreateProcess", process)
+    done = procs.run_bounded(_python("import sys; print(sys.stdin.read())"), input="pipe", timeout=5)
+    assert done.stdout == "pipe\n"
+    assert (len(jobs), len(pipes), len(processes)) == (1, 6, 2)
+    # Retain the wrappers so a missing explicit close cannot pass through GC.
+    for handle in [*jobs, *pipes, *processes]:
+        with pytest.raises(pywintypes.error) as caught:
+            win32api.GetHandleInformation(handle)
+        assert caught.value.winerror == winerror.ERROR_INVALID_HANDLE
+
+
+@windows
+def test_launcher_death_closes_job(tmp_path):
+    beat = tmp_path / "beat"
+    token = uuid4().hex
+    launcher_pid = tmp_path / "launcher"
+    launcher = subprocess.Popen(_python("""
+        import os, sys
+        from pathlib import Path
+        from self_learn.primitives import procs
+        Path(sys.argv[1]).write_text(str(os.getpid()))
+        procs.run_bounded(sys.argv[2:], timeout=30)
+    """, launcher_pid, *_python(_BEATS, beat, token, 0, "peer")))
+    try:
+        _wait_for(lambda: (tmp_path / "beat.ready").is_file())
+        first = beat.read_bytes().splitlines()[0].split()
+        assert first[0] == token.encode() and int(first[2]) == 0
+        pid = int(first[1])
+        os.kill(int(launcher_pid.read_text()), signal.SIGTERM)
+        launcher.wait(timeout=5)
+        _wait_for(lambda: not procs.pid_alive(pid))
+        stopped = beat.read_bytes()
+        assert len(stopped.splitlines()) >= 2
+        time.sleep(.1)
+        assert beat.read_bytes() == stopped
+    finally:
+        (tmp_path / "beat.stop").touch()
+        launcher.wait(timeout=6)
