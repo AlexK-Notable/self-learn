@@ -5,8 +5,11 @@ No draft is executed by self-learn. All writes enter ledger_write first.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import logging
+import math
 import os
 import re
 import shutil
@@ -14,7 +17,7 @@ import stat
 import sys
 import uuid
 from pathlib import Path
-from typing import cast, Any
+from typing import cast, Any, Iterator
 
 from . import gitops, intents, settings, skill_registry, skill_writer, worker
 from .primitives import chrono, fsops, links, names
@@ -93,6 +96,8 @@ def _safe(root: Path, path: Path) -> None:
 def draft(home: Path | str, skill: str, *, text: str, name: str, usage: str, note: str, by: str = "agent") -> dict:
     home = Path(home)
     _names(skill, name)
+    if os.name == "nt":
+        _windows_names(skill, name)
     usage = normalize_usage(usage)
     if not note.strip():
         raise ValueError("draft needs one paragraph of usage and a reason; no managed markers")
@@ -312,8 +317,12 @@ def _activate_locked(home: Path, records: list[dict], row: dict) -> None:
             fsops.finish_mode(target, 0o755)
             row.update(state="active", active_mode=0o755)
             _write_block(md, records, row["skill"])
+            if os.name == "nt":
+                _refuse_converted_bytes(root, target)
             gitops.stage(root, [target, md])
             row["host_commit"] = gitops.commit(root, f"self-learn: activate script {row['skill']}/{row['name']}", paths=[target, md])
+            if os.name == "nt":
+                row["host_commit"] = _commit_executable(root, target, text, f"self-learn: activate script {row['skill']}/{row['name']}")
         except Exception:
             row["state"] = "approved"
             if row.get("target_created"):
@@ -356,6 +365,9 @@ def _quarantine(home: Path, target: Path, row: dict, records: list[dict]) -> str
     row["quarantine"] = str(destination)
     row["activation_pending"] = True
     _save(home, records, f"script quarantine pending {row['id']}")
+    if os.name == "nt" and links.is_any_link(target):
+        _move_entry(target, destination)
+        return str(destination)
     shutil.move(str(target), str(destination))
     if not links.is_any_link(destination) and destination.is_file():
         fsops.finish_mode(destination, 0o600)
@@ -367,6 +379,10 @@ def _deactivate_locked(home: Path, records: list[dict], row: dict, note: str) ->
     with gitops.host_lock(root, "git"):
         folder = skill_writer.skill_dir(root, row["skill"])
         target, md = folder / "scripts" / row["name"], folder / "SKILL.md"
+        if os.name == "nt":
+            entry = _redirected(root, target)
+            if entry is not None and entry not in (folder, target.parent, target):
+                return _disable_redirected(home, records, row, note, entry)
         if links.is_any_link(folder) or links.is_any_link(target.parent):
             swapped = folder if links.is_any_link(folder) else target.parent
             _quarantine(home, swapped, row, records)
@@ -421,6 +437,8 @@ def _live_problem(home: Path, row: dict, root: Path, *, notices: list[str] | Non
     from . import script_proof
     folder = skill_writer.skill_dir(root, row["skill"])
     path = folder / "scripts" / row["name"]
+    if os.name == "nt" and (entry := _redirected(root, path)) is not None:
+        return f"script or folder symlink changed: redirected entry {entry}"
     if links.is_any_link(folder) or links.is_any_link(path.parent) or links.is_any_link(path):
         return "script or folder symlink changed"
     if not path.is_file():
@@ -455,7 +473,7 @@ def _integrity(home: Path, *, enforce: bool) -> list[str]:
         folder = skill_writer.skill_dir(root, name)
         try:
             md = folder / "SKILL.md"
-            broken = links.is_any_link(folder) or not md.is_file() or _usage_changed(md, records, name)
+            broken = (os.name == "nt" and _redirected(root, md) is not None) or links.is_any_link(folder) or not md.is_file() or _usage_changed(md, records, name)
         except Exception as exc:
             broken = True
             notices.append(f"script {name}: cannot read usage ({type(exc).__name__})")
@@ -464,6 +482,12 @@ def _integrity(home: Path, *, enforce: bool) -> list[str]:
                 path = folder / "scripts" / row["name"]
                 reason = None
                 evidence_notices: list[str] = []
+                if os.name == "nt" and (problem := _windows_row_problem(root, row, path)) is not None:
+                    if row["state"] == "active" or row.get("activation_pending"):
+                        notices.append(_deactivate_locked(home, records, row, problem) if enforce else f"script {name}/{row['name']}: {problem}; run self-learn recompile")
+                    elif row.get("owns_target") or row.get("deactivated_at"):
+                        notices.append(f"script {name}/{row['name']}: {problem}; left in place")
+                    continue
                 if row["state"] == "active":
                     reason = _live_problem(home, row, root, notices=evidence_notices)
                     if broken:
@@ -557,56 +581,206 @@ def listed(home: Path | str) -> list[dict]:
             if raw["state"] == "active":
                 try:
                     problem = _live_problem(home, raw, skill_writer._skills_root(home))
-                except (ValueError, OSError) as exc:
-                    problem = f"unreadable: {type(exc).__name__}"
+                except Exception as exc:  # an unavailable host refuses with its own class
+                    problem = f"unreadable: {type(exc).__name__}: {exc}"
                 row["interpreter"]["copy_check"] = problem or "verified"
         result.append(row)
     return result
 
 
 # Windows has no mode bits and no kernel shebang. An active script there is a
-# managed copy: its SHA-256 (of the exact reviewed bytes, carriage returns
-# included) and its approval are verified before every ``run``, and the
-# declared language picks the interpreter. Nothing below runs on Linux.
+# managed copy: ``run`` reads it once, checks the SHA-256 of those exact bytes
+# (carriage returns included) and the committed approval, then runs that
+# snapshot from a private folder with the declared interpreter. Nothing below
+# runs on Linux.
 RUN_TIMEOUT = 600.0
 RUN_OUTPUT_LIMIT = 64 * 1024 * 1024
-BASH_UNAVAILABLE = "unavailable on this machine: Git for Windows' bash.exe was not found in the Git installation of the git.exe on PATH"
+BASH_UNAVAILABLE = "unavailable on this machine: no bash.exe in the Git for Windows installation of the git.exe that self-learn runs"
+SCRUBBED_ENV = ("PYTHONSTARTUP", "PYTHONPATH", "PYTHONHOME", "PYTHONINSPECT", "BASH_ENV", "ENV",
+                "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS", "CDPATH", "GLOBIGNORE")
+_RUNTIME_PREFIXES = ("mingw64", "mingw32", "clangarm64", "ucrt64", "usr")
+
+
+def _windows_names(skill: str, name: str) -> None:
+    assert sys.platform == "win32"
+    from .primitives._names_windows import _check_component
+    for part in (skill, name):
+        try:
+            _check_component(part)
+        except ValueError as exc:
+            raise ValueError(f"{part!r} is a reserved Windows device name; choose another name") from exc
+
+
+def _redirected(root: Path, path: Path) -> Path | None:
+    """Windows: the first redirecting entry from the skills root down to ``path``.
+
+    Never inspects a folder above ``root``. A path outside ``root`` is itself
+    reported.
+    """
+    if not path.is_relative_to(root):
+        return path
+    for entry in reversed((path, *path.parents)):
+        if entry.is_relative_to(root) and links.is_any_link(entry):
+            return entry
+    return None
+
+
+def _windows_row_problem(root: Path, row: dict, path: Path) -> str | None:
+    try:
+        _windows_names(row["skill"], row["name"])
+    except ValueError as exc:
+        return str(exc)
+    entry = _redirected(root, path)
+    return None if entry is None else f"redirected entry {entry}; nothing beneath it was opened or moved"
+
+
+def _move_entry(entry: Path, destination: Path) -> None:
+    """Move a redirecting entry itself. A rename never follows it; across
+    volumes it fails, and the entry stays where it is."""
+    try:
+        os.rename(entry, destination)
+    except OSError as exc:
+        raise ValueError(f"cannot move redirected entry {entry} out of the skills tree ({exc}); left in place") from exc
+
+
+def _disable_redirected(home: Path, records: list[dict], row: dict, note: str, entry: Path) -> str:
+    row.update(state="drafted", active_version=None, activation_pending=False, deactivated_at=chrono.now_iso(), deactivation_note=note)
+    _save(home, records, f"script deactivated {row['id']}")
+    return f"script {row['skill']}/{row['name']} deactivated: {note}; redirected entry {entry} left in place, nothing beneath it was opened or moved"
+
+
+def _emergency_redirected(home: Path, records: list[dict], row: dict, folder: Path, target: Path, entry: Path) -> list[str]:
+    notes = []
+    row.update(state="drafted", active_version=None, activation_pending=False)
+    if entry in (folder, target.parent, target):
+        destination = home / "skill-scripts-recovery" / uuid.uuid4().hex / entry.name
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _move_entry(entry, destination)
+            row["quarantine"] = str(destination)
+            notes.append(f"script {row['skill']}/{row['name']}: redirected entry preserved at {destination}")
+        except (ValueError, OSError) as exc:
+            notes.append(f"script {row['skill']}/{row['name']}: {exc}")
+    else:
+        notes.append(f"script {row['skill']}/{row['name']}: redirected entry {entry} left in place; nothing beneath it was opened or moved")
+    try:
+        _save(home, records, f"script emergency revocation {row['id']}")
+    except Exception as exc:
+        notes.append(f"script {row['skill']}/{row['name']}: revocation incomplete ({type(exc).__name__}: {exc}); retry recompile")
+    return notes
+
+
+def _refuse_converted_bytes(root: Path, target: Path) -> None:
+    """Windows: refuse a commit whose blob would differ from the reviewed bytes
+    (core.autocrlf or .gitattributes), since other checkouts would then get
+    bytes no review approved."""
+    rel = names.git_arg(root, target)
+    stored = gitops._git_ok(root, "hash-object", "--", rel).stdout.strip()
+    exact = gitops._git_ok(root, "hash-object", "--no-filters", "--", rel).stdout.strip()
+    if stored != exact:
+        raise ValueError("activation refused: the skills repository would convert this script's line endings "
+                         "(core.autocrlf or .gitattributes), so other checkouts would get unreviewed bytes")
+
+
+def _executable_tree(root: Path, tree: str, parts: list[str]) -> str | None:
+    """A copy of ``tree`` whose entry at ``parts`` has mode 100755, or None if it already has."""
+    from .primitives import procs
+    from .primitives._capture_windows import git_argv
+    lines, found = [], False
+    for entry in gitops._git_bytes(root, "ls-tree", "-z", tree).split(b"\0"):
+        if not entry:
+            continue
+        meta, name = entry.split(b"\t", 1)
+        mode, kind, sha = meta.split(b" ")
+        if name == parts[0].encode():
+            found = True
+            if len(parts) == 1:
+                if mode == b"100755":
+                    return None
+                if mode != b"100644":
+                    raise ValueError(f"activation refused: committed script has mode {mode.decode()}")
+                mode = b"100755"
+            else:
+                inner = _executable_tree(root, sha.decode(), parts[1:])
+                if inner is None:
+                    return None
+                sha = inner.encode()
+        lines.append(mode + b" " + kind + b" " + sha + b"\t" + name)
+    if not found:
+        raise ValueError("activation refused: the script is missing from the activation commit")
+    made = procs.run_bounded(git_argv(root, ("mktree", "-z")), input=b"".join(line + b"\0" for line in lines),
+                             binary=True, timeout=gitops.GIT_LOCAL_TIMEOUT, check=True)
+    return made.stdout.decode().strip()
+
+
+def _commit_executable(root: Path, target: Path, text: str, subject: str) -> str:
+    """Windows: Git there has no executable bit to read, and ``git commit --
+    <path>`` takes a new file's mode from the file system (100644). Rewrite the
+    activation commit with the script at 100755, the mode Linux commits, and
+    check the committed mode and bytes."""
+    rel = names.git_arg(root, target)
+    head = gitops._git_ok(root, "rev-parse", "HEAD").stdout.strip()
+    tree = _executable_tree(root, head + "^{tree}", rel.split("/"))
+    if tree is not None:
+        parents = gitops._git_ok(root, "rev-list", "--parents", "-n", "1", head).stdout.split()[1:]
+        argv = ["commit-tree", tree, *[a for p in parents for a in ("-p", p)], "-m", subject]
+        rewritten = gitops._git_ok(root, *argv).stdout.strip()
+        gitops._git_ok(root, "update-ref", "-m", subject, "HEAD", rewritten, head)
+        gitops._git_ok(root, "update-index", "--chmod=+x", "--", rel)
+        head = rewritten
+    listing = gitops._git_ok(root, "ls-tree", head, "--", rel).stdout
+    if not listing.startswith("100755 "):
+        raise ValueError("activation refused: the committed script is not executable")
+    if gitops._git_bytes(root, "cat-file", "blob", f"{head}:{rel}") != text.encode():
+        raise ValueError("activation refused: the committed script differs from the reviewed bytes")
+    return head
+
+
+def _system_dirs() -> list[str]:
+    """The real System32 and SysWOW64, from the system's own answer."""
+    assert sys.platform == "win32"
+    import win32api
+    system = os.path.realpath(win32api.GetSystemDirectory())
+    return [system, os.path.realpath(os.path.join(os.path.dirname(system), "SysWOW64"))]
+
+
+def _within(path: str, folder: str) -> bool:
+    path, folder = os.path.normcase(path), os.path.normcase(folder).rstrip("\\/")
+    return path == folder or path.startswith(folder + os.sep)
 
 
 def _git_bash() -> Path | None:
-    """Git for Windows' bash.exe, found from the git.exe that PATH resolves.
+    """Git for Windows' bash.exe, from the installation of the git.exe self-learn runs.
 
-    PATH only, never the current folder; never System32's bash.exe (WSL).
-    The Git installation is the folder above ``cmd``/``bin`` or above
-    ``mingw64/bin``; bash.exe sits in its ``bin`` or ``usr/bin``.
+    git.exe is resolved by the process interface's own rule (PATH only, never
+    the current folder; a .cmd or .bat shim counts as no Git). Its real path
+    names the installation: the folder above ``cmd``/``bin`` or above
+    ``mingw64/bin``. bash.exe must exist at ``bin`` or ``usr/bin`` beneath
+    it, resolve inside it, and lie outside the real System32 and SysWOW64
+    (whose bash.exe is WSL). The Git that self-learn already trusts for its own
+    repositories is the only Git whose Bash it uses.
     """
-    here = os.path.normcase(os.path.realpath(os.curdir))
-    git = None
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        entry = entry.strip().strip('"')
-        if not entry or entry == os.curdir or not os.path.isabs(entry):
-            continue
-        if os.path.normcase(os.path.realpath(entry)) == here:
-            continue
-        if os.path.isfile(os.path.join(entry, "git.exe")):
-            git = Path(entry) / "git.exe"
-            break
-    if git is None:
+    assert sys.platform == "win32"
+    from .primitives import _procs_windows
+    git = _procs_windows._executable("git", None, None)
+    if git is None or os.path.splitext(git)[1].lower() != ".exe":
         return None
-    folder = git.parent
-    top = None
-    if folder.name.lower() in ("cmd", "bin"):
-        top = folder.parent
-        if folder.name.lower() == "bin" and top.name.lower() in ("mingw64", "mingw32", "clangarm64", "ucrt64", "usr"):
-            top = top.parent
-    if top is None:
+    folder = os.path.dirname(os.path.realpath(git))
+    top = os.path.dirname(folder)
+    if os.path.basename(folder).lower() not in ("cmd", "bin"):
         return None
-    system = os.path.normcase(os.environ.get("SystemRoot", r"C:\Windows"))
-    for candidate in (top / "bin" / "bash.exe", top / "usr" / "bin" / "bash.exe"):
-        if os.path.normcase(str(candidate)).startswith(system + os.sep):
+    if os.path.basename(folder).lower() == "bin" and os.path.basename(top).lower() in _RUNTIME_PREFIXES:
+        top = os.path.dirname(top)
+    system = _system_dirs()
+    if any(_within(top, d) for d in system):
+        return None
+    for relative in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+        candidate = os.path.join(top, *relative)
+        if not os.path.isfile(candidate):
             continue
-        if candidate.is_file():
-            return candidate
+        real = os.path.realpath(candidate)
+        if _within(real, top) and not any(_within(real, d) for d in system):
+            return Path(real)
     return None
 
 
@@ -614,6 +788,10 @@ def interpreter(row: dict) -> dict:
     """What would run this script on this Windows machine, for list/show/activation."""
     language = (row.get("screen") or {}).get("language")
     contract = f"managed copy; sha256 {row['script_sha256']} and the approval are verified before every run"
+    try:
+        _windows_names(row["skill"], row["name"])
+    except ValueError as exc:
+        return {"language": language, "available": False, "detail": str(exc), "copy": contract}
     if language == "python":
         return {"language": language, "available": True, "program": sys.executable, "copy": contract}
     if language == "bash":
@@ -624,44 +802,111 @@ def interpreter(row: dict) -> dict:
     return {"language": language, "available": False, "detail": "no declared interpreter", "copy": contract}
 
 
-def run(home: Path | str, ref: str, argv: list[str], *, timeout: float = RUN_TIMEOUT):
-    """Windows: verify an active script's managed copy, then run it.
+def _committed_activation(home: Path, row: dict) -> dict:
+    """The ledger's committed index must hold this exact, finished activation."""
+    shown = gitops._git(home, "show", "HEAD:" + INDEX)
+    committed = None
+    if shown.returncode == 0:
+        committed = next((r for r in _parse_rows(shown.stdout) if r["id"] == row["id"]), None)
+    keys = ("skill", "name", "version", "script_sha256", "usage", "state", "active_version", "activation_pending", "review")
+    if (committed is None or committed["state"] != "active" or committed.get("active_version") != committed["version"]
+            or committed.get("activation_pending") or any(committed.get(k) != row.get(k) for k in keys)):
+        raise ValueError("its activation is not the ledger's committed state; run self-learn recompile")
+    return committed
 
-    Returns the finished child (bytes output). A missing interpreter, a
-    changed copy or an unverifiable approval raises ValueError before any
-    launch. The bytes are checked once before launch; the copy is not
-    locked against edits while the child runs.
-    """
-    from .primitives import procs
-    if os.name != "nt":
-        raise ValueError("skill script run is the Windows launcher; on Linux run the script file itself")
-    home = Path(home)
-    skill, _, name = ref.partition("/")
-    _names(skill, name)
+
+def _authorize(home: Path, skill: str, name: str) -> tuple[dict, bytes]:
+    """Under the ledger lock: the committed activation, then one read of the copy."""
     records = rows(home)
     row = next((r for r in records if (r["skill"], r["name"]) == (skill, name) and r["state"] == "active"), None)
     if row is None:
         raise ValueError(f"no active script {skill}/{name}")
-    root = _eligible(home, skill)
+    try:
+        root = _eligible(home, skill)
+    except ValueError:
+        raise
+    except Exception as exc:  # an unavailable host refuses with its own classes
+        raise ValueError(f"skills root unavailable: {type(exc).__name__}: {exc}") from exc
     path = skill_writer.skill_dir(root, skill) / "scripts" / name
     _safe(root, path)
     program = interpreter(row)
     if not program["available"]:
         raise ValueError(f"script {skill}/{name} ({program['language']}) is {program['detail']}")
+    try:
+        row = _committed_activation(home, row)
+    except ValueError as exc:
+        raise ValueError(f"script {skill}/{name} refused: {exc}") from exc
     problem = _live_problem(home, row, root)
     if problem:
         raise ValueError(f"script {skill}/{name} refused: {problem}; run self-learn recompile")
-    # The copy now holds the approved bytes; their own shebang must agree.
-    if screen(path.read_bytes().decode("utf-8")).language != program["language"]:
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != row["script_sha256"]:
+        raise ValueError(f"script {skill}/{name} refused: script bytes changed; run self-learn recompile")
+    if screen(data.decode("utf-8")).language != program["language"]:
         raise ValueError(f"script {skill}/{name} refused: declared language changed; run self-learn recompile")
-    script = path.as_posix() if program["language"] == "bash" else str(path)
+    return program, data
+
+
+def run(home: Path | str, ref: str, argv: list[str], *, timeout: float = RUN_TIMEOUT, stdin: bytes | None = None):
+    """Windows: run the verified bytes of an active script.
+
+    The installed copy is read once, under the ledger lock, and those bytes are
+    checked against the committed approval. They are then written to a fresh
+    file in a private folder (an access-control list for this user only) under
+    the runtime root and run from there; the folder is removed afterwards. The
+    child keeps the caller's working folder, so relative operands resolve as
+    they do on Linux. The screen refuses every way a script could locate files
+    beside itself and every import outside a standard-library allow-list, so a
+    script's own location carries no meaning. Returns the finished child.
+    """
+    from .primitives import procs
+    if os.name != "nt":
+        raise ValueError("skill script run is the Windows launcher; on Linux run the script file itself")
+    if not (isinstance(timeout, (int, float)) and math.isfinite(timeout) and 0 < timeout <= RUN_TIMEOUT):
+        raise ValueError(f"--timeout must be more than 0 and at most {RUN_TIMEOUT:g} seconds")
+    home = Path(home)
+    skill, _, name = ref.partition("/")
+    _names(skill, name)
+    _windows_names(skill, name)
+    with intents.ledger_write(home):
+        program, data = _authorize(home, skill, name)
+    with _private_snapshot(home, name, data) as copy:
+        if program["language"] == "python":
+            # -I: no PYTHON* variables, no user site, no script folder on sys.path.
+            command = [program["program"], "-I", str(copy), *argv]
+        else:
+            command = [program["program"], "--noprofile", "--norc", copy.as_posix(), *argv]
+        env = {k: v for k, v in os.environ.items() if k.upper() not in SCRUBBED_ENV}
+        limit = None if stdin is not None else RUN_OUTPUT_LIMIT
+        try:
+            return procs.run_bounded(command, timeout=timeout, env=env, input=stdin,
+                                     binary=True, max_output_bytes=limit)
+        except procs.BoundedTimeout as exc:
+            raise ValueError(f"script {skill}/{name} ran longer than {timeout:g} s and was stopped") from exc
+        except procs.OutputLimitExceeded as exc:
+            raise ValueError(f"script {skill}/{name} wrote more than {RUN_OUTPUT_LIMIT} bytes and was stopped") from exc
+
+
+@contextlib.contextmanager
+def _private_snapshot(home: Path, name: str, data: bytes) -> Iterator[Path]:
+    """Windows: ``data`` in a fresh file, in a fresh folder whose access-control
+    list admits only this user, under the runtime root (outside every
+    repository). Removed afterwards, also when the run fails."""
+    base = names.runtime_root(home) / "script-runs"
+    fsops.ensure_private_parent(base)
+    folder = base / uuid.uuid4().hex
+    fsops.ensure_private_parent(folder)
+    copy = folder / name
     try:
-        return procs.run_bounded([program["program"], script, *argv], timeout=timeout,
-                                 binary=True, max_output_bytes=RUN_OUTPUT_LIMIT)
-    except procs.BoundedTimeout as exc:
-        raise ValueError(f"script {skill}/{name} ran longer than {timeout:g} s and was stopped") from exc
-    except procs.OutputLimitExceeded as exc:
-        raise ValueError(f"script {skill}/{name} wrote more than {RUN_OUTPUT_LIMIT} bytes and was stopped") from exc
+        with os.fdopen(fsops.open_private_new(copy), "wb") as fh:
+            fh.write(data)
+        yield copy
+    finally:
+        try:
+            copy.unlink(missing_ok=True)
+            folder.rmdir()
+        except OSError as exc:
+            logging.getLogger(__name__).warning("could not remove script run folder %s: %s", folder, exc)
 
 
 def _committed_rows(home: Path) -> list[dict] | None:
@@ -762,6 +1007,10 @@ def inspect(home: Path | str) -> list[str]:
                 md = folder / "SKILL.md"
                 reason = None
                 evidence_notices: list[str] = []
+                if os.name == "nt" and (problem := _windows_row_problem(root, row, folder / "scripts" / row["name"])) is not None:
+                    if row["state"] in {"active", "approved"} or row.get("owns_target") or row.get("deactivated_at"):
+                        notes.append(f"script {row['skill']}/{row['name']}: {problem}; run self-learn recompile")
+                    continue
                 if row["state"] == "active":
                     reason = _live_problem(home, row, root, notices=evidence_notices)
                     if links.is_any_link(folder) or not md.is_file() or _usage_changed(md, records, row["skill"]):
@@ -790,6 +1039,8 @@ def _emergency_revoke(home: Path, root: Path, records: list[dict], row: dict) ->
     notes = []
     folder = skill_writer.skill_dir(root, row["skill"])
     target = folder / "scripts" / row["name"]
+    if os.name == "nt" and (entry := _redirected(root, target)) is not None:
+        return _emergency_redirected(home, records, row, folder, target, entry)
     target = folder if links.is_any_link(folder) else target.parent if links.is_any_link(target.parent) else target
     try:
         if (target.exists() or links.is_any_link(target)) and _managed_file(target, row, records):

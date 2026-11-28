@@ -26,9 +26,15 @@ def add_parser(commands):
     if os.name == "nt":
         # Windows has no shebang or mode bits: this launcher verifies the
         # managed copy and runs it with its declared interpreter.
-        run = subs.add_parser("run", help="verify an active script's managed copy, then run it with its declared interpreter")
+        run = subs.add_parser(
+            "run", help="verify an active script's managed copy, then run it with its declared interpreter",
+            usage="self-learn skill script run [--timeout SECONDS] [--stdin] SKILL/NAME [-- ARGS ...]",
+            description="Options go before SKILL/NAME; everything after it (and after an optional --) is the script's.")
+        run.add_argument("--timeout", type=float, default=skill_scripts.RUN_TIMEOUT,
+                         help=f"stop the script after this many seconds (at most {skill_scripts.RUN_TIMEOUT:g})")
+        run.add_argument("--stdin", action="store_true",
+                         help="pass this command's standard input to the script (it reads EOF otherwise)")
         run.add_argument("script", metavar="SKILL/NAME")
-        run.add_argument("--timeout", type=float, default=skill_scripts.RUN_TIMEOUT)
         run.add_argument("args", nargs=argparse.REMAINDER)
 
 
@@ -37,6 +43,8 @@ def dispatch(home, args):
         command = args.script_command
         if command == "list":
             result = skill_scripts.listed(home)
+        elif os.name == "nt" and command == "show":
+            result = _show(home, args.id)
         elif command == "show":
             result = next((r for r in skill_scripts.listed(home) if r["id"] == args.id), None)
             if result is None:
@@ -67,8 +75,10 @@ def dispatch(home, args):
 
 def _run(home, args):
     """Windows only. The child's exit status is the command's."""
-    argv = args.args[1:] if args.args[:1] == ["--"] else args.args
-    finished = skill_scripts.run(home, args.script, argv, timeout=args.timeout)
+    # argparse has already consumed the separator; every remaining word,
+    # including a literal "--", belongs to the script.
+    data = sys.stdin.buffer.read() if args.stdin else None
+    finished = skill_scripts.run(home, args.script, list(args.args), timeout=args.timeout, stdin=data)
     out = sys.stdout.buffer
     out.write(finished.stdout)
     out.flush()
@@ -76,3 +86,15 @@ def _run(home, args):
     buf.write(finished.stderr)
     buf.flush()
     return finished.returncode
+
+
+def _show(home, ident):
+    """Windows only: the held source as its exact UTF-8 bytes, from a checked path."""
+    home = Path(home)
+    result = next((r for r in skill_scripts.listed(home) if r["id"] == ident), None)
+    if result is None:
+        raise ValueError("unknown script id: " + ident)
+    held = skill_scripts._held(home, result)
+    skill_scripts._safe(home, held)
+    result["script"] = held.read_bytes().decode("utf-8")
+    return result
