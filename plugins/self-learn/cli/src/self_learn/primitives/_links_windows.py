@@ -43,13 +43,16 @@ def _junction_data(target: Path) -> bytes:
                         0, len(substitute), len(substitute) + 2, len(display)) + names)
 
 
-def _set_junction(link: Path, data: bytes) -> None:
+def _set_junction(link: Path, data: bytes, *, expected_tag: int) -> None:
     with _winerrors(link), closing(win32file.CreateFile(
         str(link), win32con.GENERIC_WRITE, win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
         None, win32con.OPEN_EXISTING,
         win32file.FILE_FLAG_OPEN_REPARSE_POINT | win32con.FILE_FLAG_BACKUP_SEMANTICS, None,
     )) as handle:
-        win32file.DeviceIoControl(handle, winioctlcon.FSCTL_SET_REPARSE_POINT, data, 0)
+        info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
+        if info["ReparseTag"] != expected_tag:
+            raise FileExistsError(errno.EEXIST, "installation entry changed", str(link))
+        win32file.DeviceIoControl(int(handle), winioctlcon.FSCTL_SET_REPARSE_POINT, data, 0)
 
 
 def create(link: Path, target: Path, *, directory: bool) -> None:
@@ -59,7 +62,7 @@ def create(link: Path, target: Path, *, directory: bool) -> None:
         data = _junction_data(target)
         link.mkdir()
         try:
-            _set_junction(link, data)
+            _set_junction(link, data, expected_tag=0)
         except BaseException:
             link.rmdir()
             raise
@@ -121,14 +124,14 @@ def replace_staged(staged: Path, link: Path) -> None:
         pass
     if not is_managed(link):
         raise FileExistsError(errno.EEXIST, "refusing to replace an unmanaged entry", str(link))
-    if staged.absolute() == link.absolute():
+    if os.path.samestat(staged.lstat(), link.lstat()):
         return
     if _tag(staged) == _tag(link) == stat.IO_REPARSE_TAG_MOUNT_POINT:
         # The public name stays in place. A single filesystem request changes
         # its substitute name. Consuming the staged entry is a separate step.
         target = Path(read_target(staged))
         _local_ntfs(target)
-        _set_junction(link, _junction_data(target))
+        _set_junction(link, _junction_data(target), expected_tag=stat.IO_REPARSE_TAG_MOUNT_POINT)
         remove(staged)
     else:
         # File symlinks use a rename. Incompatible directory/tag replacements
