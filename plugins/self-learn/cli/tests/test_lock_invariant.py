@@ -129,6 +129,10 @@ _STREAMS = ("buf", "fh", "f", "sys", "stderr", "stdout", "out", "handle", "proc"
 #: :func:`test_the_exemption_list_cannot_rot`), so a rename or a deletion
 #: cannot leave a stale exemption quietly widening the hole.
 NOT_REPO_TRUTH = {
+    # S-NEXT-w7-supervisor: the Windows launcher's own log, under the ledger's
+    # cache folder (`supervisor.state_dir`), outside every ledger and host.
+    "supervisor_launcher._Log.__call__": "XDG cache: appends a line to <cache>/home-<digest>/supervisor/<name>.log, the launcher's log",
+    "supervisor_launcher._Log.rotate": "XDG cache: moves <cache>/home-<digest>/supervisor/<name>.log to <name>.log.1 when it grew past 4 MiB",
     # 2026-11-23 S-163, 02-schema §3a.6: what the sweep of the harness stores
     # read, kept between processes. Under $XDG_CACHE_HOME/self-learn/provenance/,
     # outside every ledger and host; rebuilt from the transcripts when absent.

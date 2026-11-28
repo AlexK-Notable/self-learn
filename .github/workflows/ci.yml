@@ -318,6 +318,47 @@ jobs:
           $delta = Compare-Object $expected @($ran | ForEach-Object { ($_.classname.Split('.')[-1]) + '::' + $_.name })
           if ($delta -or $unexpected.Count) { throw "Windows process test selection changed: $($delta | Out-String)$unexpected" }
 
+      - name: Windows supervisor contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "supervisor-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_supervisor.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $expected = @(
+            'test_policy_matches_the_host_unit'
+            'test_crash_relaunches_after_the_delay_and_gives_up_at_the_limit'
+            'test_failures_spread_beyond_the_window_never_give_up'
+            'test_clean_exit_and_stop_request_are_not_relaunched'
+            'test_stop_during_the_delay_is_not_relaunched'
+            'test_restart_request_relaunches_at_once'
+            'test_restart_requests_beyond_the_limit_count_as_failures'
+            'test_a_command_that_cannot_start_counts_as_a_failure'
+            'test_windows_crash_is_relaunched_until_the_limit'
+            'test_windows_clean_exit_is_not_relaunched'
+            'test_windows_restart_code_relaunches_at_once'
+            'test_windows_second_launcher_exits_and_stop_request_ends_the_first'
+            'test_windows_task_lifecycle'
+            'test_windows_end_kills_host_and_grandchild'
+            'test_windows_failed_and_missing_status'
+            'test_windows_status_mapping[4-267009-running]'
+            'test_windows_status_mapping[4--2147020576-running]'
+            'test_windows_status_mapping[2-0-running]'
+            'test_windows_status_mapping[3-0-stopped]'
+            'test_windows_status_mapping[3-267011-stopped]'
+            'test_windows_status_mapping[3-267014-stopped]'
+            'test_windows_status_mapping[3-3-failed]'
+            'test_windows_status_mapping[3-70-failed]'
+            'test_windows_status_mapping[3--2147024894-failed]'
+            'test_windows_status_mapping[1-0-stopped]'
+          )
+          if ((Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 12 -or
+              @($skips | Where-Object { $_.skipped.message -cne "Linux supervisor contract" }).Count) {
+            throw "Windows supervisor test selection changed: ran $ran; skipped $($skips.Count)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(

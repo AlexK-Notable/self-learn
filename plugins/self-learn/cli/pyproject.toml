@@ -28,6 +28,11 @@ sdk = []
 self-learn = "self_learn.cli:entrypoint"
 self-learn-hook = "self_learn.hook_entry:main"
 
+# A GUI-subsystem entry point: Task Scheduler starts it at logon, and a
+# console program there would open a console window (spike section 3).
+[project.gui-scripts]
+self-learn-supervise = "self_learn.supervisor_launcher:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

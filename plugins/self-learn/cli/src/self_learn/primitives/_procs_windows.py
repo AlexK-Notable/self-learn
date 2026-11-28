@@ -397,3 +397,114 @@ def pid_alive(pid: int) -> bool:
     with _Handles() as handles:
         handles.callback(win32api.CloseHandle, handle)
         return win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
+
+
+# ---------------------------------------------- supervised children (launcher)
+
+#: Append-only access: every write lands at the end of the file, so a child
+#: and the launcher can share one log without overwriting each other.
+_FILE_APPEND_DATA = 0x0004
+
+
+class SupervisedChild:
+    """A child alone in a fresh kill-on-close job. This object holds the
+    job's only handle: when the holder exits for any reason, the system
+    closes it and ends every process still in the job."""
+
+    def __init__(self, job, process, pid: int) -> None:
+        self._job = job
+        self._process = process
+        self._closed = False
+        self.pid = pid
+
+    @_os_errors()
+    def wait(self, timeout: float | None = None, *, wake=None) -> int | None:
+        """The child's exit code once it has exited; ``None`` when *timeout*
+        passed first or the *wake* handle was signalled first."""
+        handles = [self._process] if wake is None else [self._process, wake]
+        millis = win32event.INFINITE if timeout is None else math.ceil(max(0, timeout) * 1000)
+        if win32event.WaitForMultipleObjects(handles, False, millis) != win32event.WAIT_OBJECT_0:
+            return None
+        return win32process.GetExitCodeProcess(self._process)
+
+    @_os_errors()
+    def terminate(self) -> None:
+        """End every process in the job, then wait for the child, bounded."""
+        win32job.TerminateJobObject(self._job, 1)
+        if not _wait_until(self._process, time.monotonic() + _CLEANUP_SECONDS):
+            raise RuntimeError("terminated Windows child did not exit")
+
+    def close(self) -> None:
+        """Close both handles; closing the job ends whatever is left in it."""
+        if self._closed:
+            return
+        self._closed = True
+        with _os_errors(), _Handles() as handles:
+            handles.callback(win32api.CloseHandle, self._job)
+            handles.callback(win32api.CloseHandle, self._process)
+
+
+def start_supervised(argv: Sequence[str], *, env: Mapping[str, str] | None = None,
+                     cwd: str | None = None, output: str | None = None) -> SupervisedChild:
+    """Start *argv* suspended, put it alone in a new kill-on-close job, then
+    let it run, so it and everything it starts are in the job from their
+    first instruction. It gets no console window (``CREATE_NO_WINDOW``),
+    the null device as standard input, and standard output and error
+    appended to *output* (the null device when ``None``). Resolution and
+    the batch-shim refusal are :func:`run_bounded`'s."""
+    argv = list(argv)
+    environment = {k.upper(): v for k, v in env.items()} if env is not None else None
+    with _os_errors(argv[0]):
+        executable = _executable(argv[0], cwd, environment)
+        if executable is None:
+            raise ctypes.WinError(winerror.ERROR_FILE_NOT_FOUND)
+        if executable.lower().endswith((".bat", ".cmd")):
+            raise ctypes.WinError(winerror.ERROR_BAD_EXE_FORMAT,
+                                  f"Cannot launch batch shim without a shell: {executable}")
+        job = cast(Any, win32job.CreateJobObject(None, uuid4().hex))
+        process = thread = None
+        pid = 0
+        try:
+            info_class = win32job.JobObjectExtendedLimitInformation
+            info = win32job.QueryInformationJobObject(job, info_class)
+            info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            win32job.SetInformationJobObject(job, info_class, info)
+            with _launch_lock, _Handles() as children:
+                security = pywintypes.SECURITY_ATTRIBUTES()
+                security.bInheritHandle = True
+                sink = cast(Any, win32file.CreateFile(
+                    output or os.devnull, _FILE_APPEND_DATA,
+                    win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+                    security, win32con.OPEN_ALWAYS, win32con.FILE_ATTRIBUTE_NORMAL, None,
+                ))
+                children.callback(win32api.CloseHandle, sink)
+                startup = win32process.STARTUPINFO()
+                startup.dwFlags = win32process.STARTF_USESTDHANDLES
+                startup.hStdInput = _stdin(children, False)
+                startup.hStdOutput = sink
+                startup.hStdError = sink
+                try:
+                    process, thread, pid, _ = win32process.CreateProcess(
+                        executable, subprocess.list2cmdline(argv), None, None, True,
+                        win32process.CREATE_SUSPENDED | win32process.CREATE_UNICODE_ENVIRONMENT
+                        | win32process.CREATE_NO_WINDOW,
+                        environment, cwd, startup,
+                    )
+                    win32job.AssignProcessToJobObject(job, process)
+                    win32process.ResumeThread(thread)
+                except BaseException as failure:
+                    if process is not None:
+                        with _cleanup_after(failure):
+                            win32process.TerminateProcess(process, 1)
+                            _reap_after_failed_launch(process, failure)
+                    raise
+                finally:
+                    if thread is not None:
+                        win32api.CloseHandle(thread)
+        except BaseException as failure:
+            with _cleanup_after(failure), _Handles() as closing:
+                closing.callback(win32api.CloseHandle, job)
+                if process is not None:
+                    closing.callback(win32api.CloseHandle, process)
+            raise
+    return SupervisedChild(job, process, pid)

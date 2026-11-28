@@ -357,11 +357,15 @@ def test_p3_gate_census_matches_the_measured_count():
 
 def test_native_launch_has_one_owner_and_rejects_a_second(tmp_path):
     # Count the native API separately from the stdlib subprocess census.
-    sites = [(path.relative_to(SRC).as_posix(), node.lineno)
-             for path in SRC.rglob("*.py")
-             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-             if isinstance(node, ast.Call) and _callee_name(node) == "CreateProcess"]
-    assert [path for path, _ in sites] == ["primitives/_procs_windows.py"], sites
+    # One owner module; inside it, each launching function is named, so a
+    # new CreateProcess there is as visible as one anywhere else.
+    sites = sorted((path.relative_to(SRC).as_posix(), getattr(fn, "name", "<module>"))
+                   for path in SRC.rglob("*.py")
+                   for fn in ast.parse(path.read_text(encoding="utf-8")).body
+                   for node in ast.walk(fn)
+                   if isinstance(node, ast.Call) and _callee_name(node) == "CreateProcess")
+    assert sites == [("primitives/_procs_windows.py", "_launch"),
+                     ("primitives/_procs_windows.py", "start_supervised")], sites
     assert not [v for v in scan(SRC) if v.kind == "native-launch-outside-backend"]
     calls = [
         "CreateProcess()", "native.CreateProcessW()", "native.CreateProcessA()",
