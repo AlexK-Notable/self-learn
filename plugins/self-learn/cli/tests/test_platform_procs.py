@@ -1147,3 +1147,7 @@ def test_native_errors_include_cause_during_setup_and_cleanup(monkeypatch, site)
     assert caught.value.filename == argv[0]
     assert caught.value.winerror == failure.winerror and caught.value.__cause__ is failure
     _assert_no_pipe_threads()
+
+
+def test_unexpected_replacement_node():
+    assert True
