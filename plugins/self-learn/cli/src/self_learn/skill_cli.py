@@ -50,10 +50,10 @@ import sys
 from pathlib import Path
 from typing import Mapping, cast
 
-from .primitives import links
 from . import gitops, attribution, grant_uses, grants, skill_registry, skill_requests, skill_writer
 from .gitops import EXIT_GIT_FAILED
 from .ledger import resolve_home
+from .primitives import links
 # Called by its bare name, never as ``skill_writer.rename(...)``: the lock
 # invariant's walker (tests/test_lock_invariant.py) reads every
 # ``<x>.rename(...)`` call as ``Path.rename``, an unlocked filesystem move,

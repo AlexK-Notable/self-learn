@@ -5,7 +5,19 @@ import os
 from pathlib import Path
 
 
-class FileLinkPrivilegeError(OSError):
+class LinkRefused(OSError):
+    """The native installation-link policy refused the requested operation."""
+
+
+class LinkTargetUnsupported(LinkRefused):
+    """The target or containing volume cannot host this kind of link."""
+
+
+class UnmanagedLinkError(FileExistsError, LinkRefused):
+    """An occupied entry cannot be managed or overwritten."""
+
+
+class FileLinkPrivilegeError(LinkRefused):
     """Windows denied permission to create a file symlink (winerror 1314)."""
 
 
@@ -18,12 +30,19 @@ def _backend():
 
 
 def create(link: Path, target: Path, *, directory: bool) -> None:
-    """Create a new entry, refusing collisions. A Windows junction target must be absolute."""
+    """Create a new entry. Windows raises LinkTargetUnsupported for unsupported
+    junction paths/volumes and FileLinkPrivilegeError for file-link error 1314.
+    Occupied names raise FileExistsError.
+    """
     _backend().create(link, target, directory=directory)
 
 
 def replace_staged(staged: Path, link: Path) -> None:
-    """Publish a staged link to an absent name or a previously checked managed link."""
+    """Publish a staged link to an absent name or a previously checked managed link.
+
+    A successful rename consumes the stage. After native in-place retargeting,
+    a failed stage removal logs the leftover and publication succeeds.
+    """
     _backend().replace_staged(staged, link)
 
 
@@ -48,5 +67,9 @@ def resolve_target(link: Path) -> Path:
 
 
 def remove(link: Path) -> None:
-    """Remove a previously checked managed entry without following its target."""
+    """Remove a previously checked managed entry. A missing name raises FileNotFoundError.
+
+    POSIX relies on the caller's check under the installation lock. Windows also
+    checks the entry on its deletion handle, raising UnmanagedLinkError on refusal.
+    """
     _backend().remove(link)

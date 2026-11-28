@@ -70,13 +70,15 @@ def test_occupied_directory(tmp_path):
     with pytest.raises(FileExistsError):
         links.create(folder, tmp_path, directory=True)
     links.create(stage, tmp_path, directory=True)
-    with pytest.raises((ValueError, OSError)):
+    with pytest.raises(links.UnmanagedLinkError if os.name == "nt" else IsADirectoryError):
         links.replace_staged(stage, folder)
-    with pytest.raises((ValueError, OSError)):
+    with pytest.raises(links.UnmanagedLinkError if os.name == "nt" else IsADirectoryError):
         links.remove(folder)
     assert folder.is_dir() and not links.is_any_link(folder)
     assert links.is_managed(stage)
     links.remove(stage)
+    with pytest.raises(FileNotFoundError):
+        links.remove(stage)
 
 
 @windows
@@ -115,10 +117,16 @@ def test_windows_target_validation(tmp_path, monkeypatch):
 
     entry = tmp_path / "link"
     for path in (Path("relative"), Path(r"\\server\share\folder")):
-        with pytest.raises(ValueError, match="absolute local drive"):
+        with pytest.raises(links.LinkTargetUnsupported, match="absolute local drive"):
             links.create(entry, path, directory=True)
-    monkeypatch.setattr(win32file, "GetDriveType", lambda root: win32con.DRIVE_REMOTE)
-    with pytest.raises(ValueError, match="local NTFS"):
+    with monkeypatch.context() as remote:
+        remote.setattr(win32file, "GetDriveType", lambda root: win32con.DRIVE_REMOTE)
+        with pytest.raises(links.LinkTargetUnsupported, match="local NTFS"):
+            links.create(entry, tmp_path, directory=True)
+    import win32api
+    real_info = win32api.GetVolumeInformation
+    monkeypatch.setattr(win32api, "GetVolumeInformation", lambda volume: (*real_info(volume)[:4], "FAT32"))
+    with pytest.raises(links.LinkTargetUnsupported, match="local NTFS"):
         links.create(entry, tmp_path, directory=True)
     assert not os.path.lexists(entry)
 
@@ -155,7 +163,11 @@ def test_windows_retarget_failure_preserves_entries(tmp_path, monkeypatch):
     links.create(public, first, directory=True)
     links.create(stage, second, directory=True)
     failure = pywintypes.error(5, "DeviceIoControl", "injected failure")
-    def refuse(*args):
+    import winioctlcon
+    real_ioctl = win32file.DeviceIoControl
+    def refuse(handle, control, data, size):
+        if control != winioctlcon.FSCTL_SET_REPARSE_POINT:
+            return real_ioctl(handle, control, data, size)
         assert links.read_target(public) == str(first)
         raise failure
     with monkeypatch.context() as faults:
@@ -182,6 +194,155 @@ def test_windows_retarget_failure_preserves_entries(tmp_path, monkeypatch):
     assert public.is_dir() and not links.is_any_link(public)
     assert links.read_target(displaced) == str(first)
     assert links.read_target(stage) == str(second)
+
+
+@windows
+def test_windows_volume_mount_is_unmanaged(tmp_path, monkeypatch):
+    import struct
+    import win32file
+    import winioctlcon
+
+    target, public, stage = (tmp_path / name for name in ("target", "public", "stage"))
+    target.mkdir()
+    links.create(public, target, directory=True)
+    links.create(stage, target, directory=True)
+    assert links.is_managed(public)
+    # Simulate a volume mount's substitute name at both native read boundaries
+    # on real junctions. No system volume is mounted or unmounted.
+    volume = "Volume{00000000-0000-0000-0000-000000000000}\\"
+    real_read = os.readlink
+    monkeypatch.setattr(os, "readlink", lambda path: "\\\\?\\" + volume if path == public else real_read(path))
+    assert links.is_any_link(public) and not links.is_managed(public)
+    assert links.read_target(public) == "\\\\?\\" + volume
+    raw = ("\\??\\" + volume).encode("utf-16-le")
+    def get_mount(handle, control, data, size):
+        assert control == winioctlcon.FSCTL_GET_REPARSE_POINT
+        return struct.pack("<I6H", stat.IO_REPARSE_TAG_MOUNT_POINT, 10 + len(raw), 0,
+                           0, len(raw), len(raw), 0) + raw + b"\0\0"
+    monkeypatch.setattr(win32file, "DeviceIoControl", get_mount)
+    with pytest.raises(links.UnmanagedLinkError):
+        links.remove(public)
+    with pytest.raises(links.UnmanagedLinkError):
+        links.replace_staged(stage, public)
+    with pytest.raises(links.UnmanagedLinkError):
+        links.replace_staged(public, tmp_path / "new")
+    assert public.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    assert links.is_managed(stage)
+
+
+@windows
+def test_windows_remove_deletes_checked_handle(tmp_path, monkeypatch):
+    import win32file
+
+    target, public, moved = (tmp_path / name for name in ("target", "entry", "moved"))
+    target.write_text("sentinel")
+    links.create(public, target, directory=False)
+    dispose = win32file.SetFileInformationByHandle
+    disposed = []
+    def before_delete(handle, kind, value):
+        assert kind == win32file.FileDispositionInfo and value
+        assert win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)["ReparseTag"] == stat.IO_REPARSE_TAG_SYMLINK
+        with pytest.raises(PermissionError) as busy:
+            public.rename(moved)
+        assert busy.value.winerror == 32
+        disposed.append(handle)
+        return dispose(handle, kind, value)
+    monkeypatch.setattr(win32file, "SetFileInformationByHandle", before_delete)
+    links.remove(public)
+    assert len(disposed) == 1 and not os.path.lexists(public)
+    assert target.read_text() == "sentinel"
+
+
+@windows
+def test_windows_dangling_directory_symlink_callers(tmp_path, monkeypatch):
+    from self_learn import skill_writer
+
+    public, gone, target = (tmp_path / name for name in ("public", "gone", "target"))
+    os.symlink(gone, public, target_is_directory=True)
+    assert links.read_target(public) == str(gone)
+    with monkeypatch.context() as names:
+        names.setattr(os, "readlink", lambda path: "\\??\\" + str(gone))
+        assert links.read_target(public) == str(gone)
+    assert skill_writer._drop_link(public, gone)
+    os.symlink(gone, public, target_is_directory=True)
+    target.mkdir()
+    (target / "SKILL.md").write_text("new skill")
+    assert skill_writer._place_link(public, target) == "replaced"
+    assert public.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    assert (public / "SKILL.md").read_text() == "new skill"
+
+
+@windows
+def test_windows_published_with_busy_stage(tmp_path, monkeypatch, caplog):
+    import pywintypes
+    import win32file
+    from self_learn import skill_writer
+
+    public, gone, target = (tmp_path / name for name in ("public", "gone", "target"))
+    target.mkdir()
+    (target / "SKILL.md").write_text("published")
+    links.create(public, gone, directory=True)
+    def busy(*args):
+        raise pywintypes.error(32, "SetFileInformationByHandle", "busy stage")
+    with monkeypatch.context() as faults:
+        faults.setattr(win32file, "SetFileInformationByHandle", busy)
+        assert skill_writer._place_link(public, target) == "replaced"
+    stage, = tmp_path.glob(".public.self-learn-*")
+    assert str(stage) in caplog.text and "busy stage" in caplog.text
+    assert (public / "SKILL.md").read_text() == "published"
+    assert links.read_target(stage) == str(target)
+    links.remove(stage)
+    assert skill_writer._place_link(public, target) == "unchanged"
+
+
+@windows
+@pytest.mark.parametrize("position", ["root", "descendant"])
+def test_windows_adoption_refuses_junction(tmp_path, position):
+    from self_learn import skill_registration
+
+    root, loose = tmp_path / "skills-root", tmp_path / "loose"
+    loose.mkdir()
+    skill = loose / "sample"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: sample\ndescription: A test skill.\n---\n")
+    assert skill_registration._inspect(root, skill)[0] == "sample"
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    if position == "root":
+        entry = other / "sample"
+        links.create(entry, skill, directory=True)
+        reason = "loose real directory"
+    else:
+        entry = skill
+        links.create(skill / "subdirectory", other, directory=True)
+        reason = "contains symlinks"
+    with pytest.raises(skill_registration.RegistrationError, match=reason):
+        skill_registration._inspect(root, entry)
+
+
+@windows
+def test_windows_skill_write_and_relink_report_refused_volume(tmp_path, monkeypatch, capsys):
+    import json
+    import win32api
+    import test_skill_write as skills
+    from self_learn import cli, skill_writer
+
+    env = skills.Env(tmp_path, monkeypatch)
+    draft = tmp_path / "draft"
+    for rel, contents in skills.draft().items():
+        file = draft / rel
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(contents, encoding="utf-8")
+    real_info = win32api.GetVolumeInformation
+    monkeypatch.setattr(win32api, "GetVolumeInformation", lambda volume: (*real_info(volume)[:4], "ReFS"))
+    result = cli.main(["skill", "write", skills.NAME, "--from", str(draft), "--json", "--no-push"])
+    assert result == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["kind"] == skill_writer.KIND_NEEDS_PERSON and not report["ok"]
+    assert "could not be linked" in report["problems"][0] and "local NTFS" in report["problems"][0]
+    assert env.skill_md().is_file() and not os.path.lexists(env.link())
+    outcome, problem = skill_writer.relink(env.home, skills.NAME)
+    assert outcome is None and "local NTFS" in problem and str(env.skill_dir()) in problem
 
 
 @posix

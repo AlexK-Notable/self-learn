@@ -432,6 +432,8 @@ def _primitive(call: ast.Call) -> str | None:
     # migration needs.
     if func.attr in ("atomic_write", "private_write", "replace_staged", "open_for_mode", "finish_mode") and _dotted(func) == f"fsops.{func.attr}":
         return f"fsops.{func.attr}"
+    if func.attr in ("create", "replace_staged", "remove") and _dotted(func) == f"links.{func.attr}":
+        return f"links.{func.attr}"
     return None
 
 
@@ -764,6 +766,16 @@ def analysis() -> _Analysis:
 
 
 # ================================================================ the check
+
+
+def test_skill_installation_mutators_require_the_host_lock(analysis):
+    required = analysis.requires_lock()
+    for function, operations in (
+        ("skill_writer._place_link", {"links.create", "links.replace_staged", "links.remove"}),
+        ("skill_writer._drop_link", {"links.remove"}),
+    ):
+        assert function in required
+        assert operations <= {name for _, name in analysis.mutations(function, set())}
 
 
 class TestNoMutationPrecedesItsLock:

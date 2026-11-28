@@ -59,7 +59,11 @@ jobs:
           $expected = @(
             'test_directory_publication_and_removal', 'test_dangling_directory', 'test_file_link',
             'test_occupied_directory', 'test_windows_native_facts', 'test_windows_target_validation',
-            'test_windows_privilege_error', 'test_windows_retarget_failure_preserves_entries'
+            'test_windows_privilege_error', 'test_windows_retarget_failure_preserves_entries',
+            'test_windows_volume_mount_is_unmanaged', 'test_windows_remove_deletes_checked_handle',
+            'test_windows_dangling_directory_symlink_callers', 'test_windows_published_with_busy_stage',
+            'test_windows_adoption_refuses_junction[root]', 'test_windows_adoption_refuses_junction[descendant]',
+            'test_windows_skill_write_and_relink_report_refused_volume'
           )
           foreach ($version in '3.12', '3.13') {
             $report = Join-Path $env:RUNNER_TEMP "link-contracts-$version.xml"
