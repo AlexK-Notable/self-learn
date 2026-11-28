@@ -48,6 +48,7 @@ class Case:
     child_exit: int = 0
     slow: bool = False
     missing: str = ""
+    cwd_stub: bool = False
 
     def expected(self):
         invocations = []
@@ -146,6 +147,12 @@ CASES = [
 ]
 NATIVE_PATH = r"C:\work\references\nested\guide.md"
 BACKSLASH = read("read-native-path", event(NATIVE_PATH), path=NATIVE_PATH if WINDOWS else None)
+WINDOWS_CASES = [
+    *CASES,
+    BACKSLASH,
+    status("status-cwd-ignored", missing="self-learn", cwd_stub=True,
+           stdout=DEGRADED + "self-learn is not on PATH\n"),
+]
 LINUX_DEPS = [
     status("status-no-jq", missing="jq", stdout=DEGRADED + "jq is not on PATH\n"),
     status("status-no-timeout", missing="timeout", stdout=DEGRADED + "timeout is not on PATH\n"),
@@ -218,6 +225,8 @@ def fixture_env(tmp_path, case):
         env["PYTHONPATH"] = str(stub.parent)
         if case.missing != "self-learn":
             shutil.copyfile(installed("self-learn"), bindir / "self-learn.exe")
+        if case.cwd_stub:
+            shutil.copyfile(installed("self-learn"), tmp_path / "self-learn.exe")
     else:
         for name in ("jq", "timeout", "cat"):
             if name != case.missing:
@@ -260,7 +269,7 @@ def test_bash_differential(tmp_path, case):
 
 
 @pytest.mark.skipif(not WINDOWS, reason="native Windows console executable")
-@pytest.mark.parametrize("case", [*CASES, BACKSLASH], ids=lambda case: case.name)
+@pytest.mark.parametrize("case", WINDOWS_CASES, ids=lambda case: case.name)
 def test_windows_console_hook(tmp_path, case):
     env, log, done = fixture_env(tmp_path, case)
     assert observe([str(installed("self-learn-hook")), case.command],

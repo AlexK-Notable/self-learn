@@ -55,7 +55,20 @@ jobs:
 
       - name: Windows observer hook tests
         working-directory: plugins/self-learn/cli
-        run: uv run --no-sync python -m pytest tests/test_hook_entry.py -p no:cacheprovider -q -rs
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "observer-hook-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_hook_entry.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object {
+            $_.name -cmatch '^test_windows_console_hook\[' -and !$_.SelectSingleNode("skipped")
+          })
+          $posix = @($cases | Where-Object {
+            $_.name -cmatch '^test_bash_differential\[' -and $_.skipped.message -ceq "Bash differential runs on POSIX"
+          })
+          if ($ran.Count -ne 34 -or $posix.Count -ne 38 -or $cases.Count -ne 72) {
+            throw "Expected 34 native hook cases and 38 POSIX-only skips. Executed $($ran.Count) native cases. Found $($posix.Count) POSIX-only skips and $($cases.Count) total cases."
+          }
 
       - name: Windows names and folders contracts
         working-directory: plugins/self-learn/cli

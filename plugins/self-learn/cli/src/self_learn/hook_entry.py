@@ -212,11 +212,29 @@ def _read_observed(executable: str) -> None:
         pass  # This observer must never interrupt a Read.
 
 
+def _find_self_learn() -> str | None:
+    if os.name != "nt":
+        return shutil.which("self-learn")
+
+    # Windows shutil.which can look in the current directory for bare names.
+    # Hooks run in the session's project, so only use the configured PATH.
+    current = os.path.normcase(os.path.realpath(os.curdir))
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        directory = os.path.realpath(entry)
+        if os.path.normcase(directory) != current:
+            executable = os.path.join(directory, "self-learn.exe")
+            if os.path.isfile(executable):
+                return executable
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="self-learn-hook")
     parser.add_argument("event", choices=("session-start", "read-observed"))
     session_start = parser.parse_args().event == "session-start"
-    executable = shutil.which("self-learn.exe" if os.name == "nt" else "self-learn")
+    executable = _find_self_learn()
     if not executable:
         if session_start:
             _degraded("self-learn is not on PATH")
