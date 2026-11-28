@@ -377,3 +377,58 @@ def test_windows_toast_document_loads_in_winrt(name):
     texts = document.get_elements_by_tag_name("text")
     assert [node.inner_text for node in texts] == [text, text]
     ToastNotification(document)
+
+
+SETTINGS_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\" + notify_desktop.AUMID
+
+
+def _run_helper(home: Path, body: str) -> tuple[subprocess.CompletedProcess, str]:
+    argv = notify_desktop.helper_argv(sys.executable, title="self-learn", body=body, url=UI)
+    result = subprocess.run(argv, capture_output=True, timeout=notify_desktop.CALLER_TIMEOUT_SECONDS,
+                            env=_child_env(home), stdin=subprocess.DEVNULL)
+    (line,) = _log_lines()
+    return result, line
+
+
+@windows
+@pytest.mark.skipif(not _extra_installed(), reason="desktop extra not installed")
+def test_windows_shown_toast_stays_in_action_center(scratch):
+    """After the helper has exited, its toast is in this user's notification
+    history under the registered identity, carrying the protocol launch
+    (whether a person can see and click it is the tester checklist's)."""
+    from winrt.windows.ui.notifications import ToastNotificationManager
+
+    marker = f"history check {os.getpid()} {time.time_ns()}"
+    result, line = _run_helper(scratch, marker)
+    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
+    assert line.endswith("notify: shown")
+    history = ToastNotificationManager.history
+    try:
+        found = []
+        deadline = time.monotonic() + 5
+        while not found and time.monotonic() < deadline:
+            found = [toast.content.get_xml() for toast in history.get_history(notify_desktop.AUMID)
+                     if marker in toast.content.get_xml()]
+            time.sleep(0.2)
+        assert found, "the toast is not in the notification history"
+        root = fromstring(found[0])
+        assert root.get("activationType") == "protocol" and root.get("launch") == UI
+    finally:
+        history.clear(notify_desktop.AUMID)
+
+
+@windows
+@pytest.mark.skipif(not _extra_installed(), reason="desktop extra not installed")
+def test_windows_switched_off_notifications_are_logged(scratch):
+    """The person switched self-learn's notifications off in Settings: the
+    helper shows nothing, exits 0 and says so in its one log line."""
+    import winreg
+
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, SETTINGS_KEY, 0, winreg.KEY_ALL_ACCESS) as key:
+        winreg.SetValueEx(key, "Enabled", 0, winreg.REG_DWORD, 0)
+    try:
+        result, line = _run_helper(scratch, "switched off")
+    finally:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, SETTINGS_KEY)
+    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
+    assert line.endswith("notify: skipped: notifications are off for this session (DISABLED_FOR_APPLICATION)")
