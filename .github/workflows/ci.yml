@@ -174,18 +174,27 @@ jobs:
             'test_windows_adoption_requires_a_strictly_younger_child[older]'
             'test_windows_adoption_requires_a_strictly_younger_child[tie]'
             'test_windows_breakaway_after_assignment_is_never_recaptured'
+            'test_windows_child_spawned_during_assignment_is_adopted'
             'test_windows_sweep_failures_are_reported_not_raised[snapshot]'
             'test_windows_sweep_failures_are_reported_not_raised[refusal]'
             'test_windows_sweep_failures_are_reported_not_raised[passes]'
+            'test_windows_sweep_failures_are_reported_not_raised[close-after-failed-walk]'
+            'test_windows_sweep_failures_are_reported_not_raised[close-only]'
+            'test_windows_sweep_failures_are_reported_not_raised[parent-query]'
             'test_windows_interrupted_containment_hands_the_job_over'
+            'test_windows_interrupted_containment_publishes_its_owner[translated]'
+            'test_windows_interrupted_containment_publishes_its_owner[after-adoption]'
             'test_windows_abrupt_death_of_the_container[none]'
             'test_windows_abrupt_death_of_the_container[child]'
             'test_windows_abrupt_death_of_the_container[self]'
             'test_windows_contained_self_keeps_its_exit_status[exit]'
             'test_windows_contained_self_keeps_its_exit_status[finalize]'
+            'test_windows_self_assignment_interrupted_keeps_the_job'
             'test_windows_breakaway_from_the_self_job_before_containment_is_left_out'
             'test_windows_identity_tells_a_reused_pid_apart'
+            'test_windows_filetime_conversion_keeps_both_words'
             'test_windows_identity_keeps_the_full_creation_time'
+            'test_windows_identity_predates_boot'
             'test_windows_identity_and_contain_of_missing_or_exited_pid'
             'test_windows_identity_open_errors[ERROR_ACCESS_DENIED-None]'
             'test_windows_identity_open_errors[ERROR_INVALID_HANDLE-OSError]'
@@ -201,7 +210,7 @@ jobs:
             'test_identities_compare_and_hash_by_value'
           )
           $delta = Compare-Object $expected @($ran | ForEach-Object { $_.name })
-          if ($delta -or $unexpected.Count -or $skips.Count -ne 19) {
+          if ($delta -or $unexpected.Count -or $skips.Count -ne 20) {
             throw "Windows containment test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
           }
 

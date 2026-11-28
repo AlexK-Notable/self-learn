@@ -186,3 +186,9 @@ def terminate_contained(handle: ContainedChild | None) -> None:
 def contain_self() -> bool:
     """POSIX does nothing here: process groups already carry descendants."""
     return False
+
+
+def identity_predates_boot(identity: ProcessIdentity) -> bool:
+    """POSIX identities carry no creation time, so there is nothing to compare;
+    the orphan sweep's own checks (sidecar time, cmdline) stay in force."""
+    return False

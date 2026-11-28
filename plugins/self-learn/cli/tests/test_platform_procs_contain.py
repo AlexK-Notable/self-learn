@@ -67,6 +67,7 @@ def publish(path, text):
 #: Mode "early-away": first spawn a breakaway sleeper and publish its PID to
 #: "<ready>.away". Mode "late-away": after publishing, wait for "<ready>.go"
 #: and then spawn a breakaway sleeper, publishing its PID to "<ready>.late".
+#: Mode "late-plain": the same with an ordinary (inheriting) sleeper.
 _STANDIN = _PUBLISH + r"""
 import os, subprocess, sys, time
 from pathlib import Path
@@ -84,13 +85,19 @@ if depth:
         time.sleep(.005)
     pids += tail.read_text().split()
 publish(ready, " ".join(map(str, pids)))
-if mode == "late-away":
+if mode in ("late-away", "late-plain"):
     while not Path(str(ready) + ".go").exists():
         time.sleep(.005)
-    late = subprocess.Popen(sleeper, creationflags=0x01000000)
+    late = subprocess.Popen(sleeper, creationflags=0x01000000 if mode == "late-away" else 0)
     publish(str(ready) + ".late", str(late.pid))
 time.sleep(120)
 """
+
+
+def _kill_tree(pid):
+    """Best-effort cleanup of a failed setup: the process and every
+    descendant still linked to it by parent."""
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=60)
 
 
 def _standin(directory, name="standin", depth=1, mode="plain"):
@@ -99,6 +106,7 @@ def _standin(directory, name="standin", depth=1, mode="plain"):
     try:
         _wait_for(ready.exists)
     except BaseException:
+        _kill_tree(proc.pid)
         proc.kill()
         raise
     return proc, [int(pid) for pid in ready.read_text().split()]
@@ -473,7 +481,42 @@ def test_windows_breakaway_after_assignment_is_never_recaptured(tmp_path, monkey
 
 
 @windows
-@pytest.mark.parametrize("failure", ["snapshot", "refusal", "passes"])
+def test_windows_child_spawned_during_assignment_is_adopted(tmp_path, monkeypatch):
+    """An ordinary child the stand-in starts while its own assignment call is
+    running did not inherit the job; it must still be adopted. The spawn is
+    forced into that interval by holding the real assignment until it exists."""
+    import win32job
+    import win32process
+
+    proc, (child, grandchild) = _standin(tmp_path, mode="late-plain")
+    late_file = tmp_path / "standin.late"
+    real_assign = win32job.AssignProcessToJobObject
+
+    def assign_after_spawn(job, process):
+        if win32process.GetProcessId(process) == child and not late_file.exists():
+            (tmp_path / "standin.go").write_text("")
+            _wait_for(late_file.exists)
+        return real_assign(job, process)
+    monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign_after_spawn)
+    watch = None
+    try:
+        handle = procs.contain_child(child)
+        late = int(late_file.read_text())
+        watch = _Watch([child, grandchild, late])
+        assert not handle.left_out
+        assert sorted(handle.adopted) == sorted([grandchild, late])
+        procs.terminate_contained(handle)
+        assert watch.alive() == [False, False, False]
+    finally:
+        if watch is not None:
+            watch.kill()
+        _kill_tree(proc.pid)
+        proc.wait(timeout=5)
+
+
+@windows
+@pytest.mark.parametrize("failure", ["snapshot", "refusal", "passes", "close-after-failed-walk",
+                                     "close-only", "parent-query"])
 def test_windows_sweep_failures_are_reported_not_raised(tmp_path, monkeypatch, failure):
     import ctypes
 
@@ -486,7 +529,19 @@ def test_windows_sweep_failures_are_reported_not_raised(tmp_path, monkeypatch, f
     proc, pids = _standin(tmp_path, depth=2 if failure == "passes" else 1)
     watch = _Watch(pids)
     try:
-        if failure == "snapshot":
+        if failure in ("close-after-failed-walk", "close-only"):
+            monkeypatch.setattr(backend, "_close_handle", _set_last_error_and_fail(winerror.ERROR_INVALID_HANDLE))
+            if failure == "close-after-failed-walk":
+                monkeypatch.setattr(backend, "_first_entry", _set_last_error_and_fail(winerror.ERROR_ACCESS_DENIED))
+        elif failure == "parent-query":
+            status_access_denied = -1073741790  # 0xC0000022 as a signed NTSTATUS
+            real_query = backend._query_process
+            def deny(process, *args):
+                if win32process.GetProcessId(int(process)) == pids[1]:
+                    return status_access_denied
+                return real_query(process, *args)
+            monkeypatch.setattr(backend, "_query_process", deny)
+        elif failure == "snapshot":
             monkeypatch.setattr(backend, "_process_parents",
                                 Mock(side_effect=ctypes.WinError(winerror.ERROR_NOT_ENOUGH_MEMORY)))
         elif failure == "refusal":
@@ -511,14 +566,21 @@ def test_windows_sweep_failures_are_reported_not_raised(tmp_path, monkeypatch, f
         if failure == "snapshot":
             assert handle.uncovered == ((0, winerror.ERROR_NOT_ENOUGH_MEMORY),) and not handle.complete
             assert handle.adopted == ()
+        elif failure == "close-after-failed-walk":
+            assert handle.uncovered == ((0, winerror.ERROR_ACCESS_DENIED), (0, winerror.ERROR_INVALID_HANDLE))
+            assert not handle.complete
+        elif failure == "close-only":
+            assert handle.uncovered == ((0, winerror.ERROR_INVALID_HANDLE),) and not handle.complete
+        elif failure == "parent-query":
+            assert handle.uncovered == ((pids[1], winerror.ERROR_ACCESS_DENIED),) and handle.complete
         elif failure == "refusal":
             assert handle.uncovered == ((pids[1], winerror.ERROR_ACCESS_DENIED),) and handle.complete
         else:
             assert handle.adopted == (pids[1],) and not handle.complete
         procs.terminate_contained(handle)
         time.sleep(0.2)
-        expected = {"snapshot": [False, True], "refusal": [False, True], "passes": [False, False, True]}
-        assert watch.alive() == expected[failure]
+        expected = {"passes": [False, False, True]}.get(failure, [False, True])
+        assert watch.alive() == expected
     finally:
         watch.kill()
         proc.wait(timeout=5)
@@ -551,6 +613,60 @@ def test_windows_interrupted_containment_hands_the_job_over(tmp_path, monkeypatc
         proc.wait(timeout=5)
 
 
+@windows
+@pytest.mark.parametrize("site", ["translated", "after-adoption"])
+def test_windows_interrupted_containment_publishes_its_owner(tmp_path, monkeypatch, site):
+    """translated: the root's assignment fails with a native error (re-raised
+    as a new OSError) and the membership check fails too, so the owner is
+    kept; the public exception must still carry it. after-adoption: an
+    interruption right after a grandchild was assigned; the owner must
+    already hold that grandchild."""
+    import pywintypes
+    import win32job
+    import win32process
+    import winerror
+    from self_learn.primitives import _procs_windows as backend
+
+    proc, (child, grandchild) = _standin(tmp_path)
+    watch = _Watch([child, grandchild])
+    real_assign, real_member = win32job.AssignProcessToJobObject, win32job.IsProcessInJob
+    if site == "translated":
+        refusal = pywintypes.error(winerror.ERROR_ACCESS_DENIED, "AssignProcessToJobObject", "injected")
+        monkeypatch.setattr(win32job, "AssignProcessToJobObject", Mock(side_effect=refusal))
+        def member(process, job):
+            if job is not None:
+                raise pywintypes.error(winerror.ERROR_INVALID_HANDLE, "IsProcessInJob", "injected")
+            return real_member(process, job)
+        monkeypatch.setattr(win32job, "IsProcessInJob", member)
+        expected = OSError
+    else:
+        def assign_then_interrupt(job, process):
+            real_assign(job, process)
+            if win32process.GetProcessId(process) == grandchild:
+                raise KeyboardInterrupt
+        monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign_then_interrupt)
+        expected = KeyboardInterrupt
+    try:
+        with pytest.raises(expected) as caught:
+            procs.contain_child(child)
+        monkeypatch.undo()
+        handle = caught.value.contained_child
+        assert handle in backend.unclaimed
+        if site == "translated":
+            assert caught.value.winerror == winerror.ERROR_ACCESS_DENIED
+            procs.terminate_contained(handle)
+            time.sleep(0.2)
+            assert watch.alive() == [True, True]  # never assigned, so not killed
+        else:
+            assert handle.adopted == (grandchild,) and len(handle._processes) == 2
+            procs.terminate_contained(handle)
+            assert watch.alive() == [False, False]
+        assert handle not in backend.unclaimed
+    finally:
+        watch.kill()
+        proc.wait(timeout=5)
+
+
 # --------------------------------------------------------------------------
 # Windows: the containing process dies, abruptly or normally
 # --------------------------------------------------------------------------
@@ -576,6 +692,29 @@ if mode in ("self", "exit", "finalize"):
     report["self_jobs"] = len(backend._self_job)
     away = subprocess.Popen(sleeper, creationflags=0x01000000)
     report["breakaway"] = away.pid
+if mode == "interrupt":
+    # The assignment takes effect, then an interruption arrives before
+    # contain_self can record it.
+    from self_learn.primitives import _procs_windows as backend
+    real_assign, real_create, made = win32job.AssignProcessToJobObject, win32job.CreateJobObject, []
+    def counted(*args):
+        made.append(1)
+        return real_create(*args)
+    def assign_then_interrupt(job, process):
+        real_assign(job, process)
+        raise KeyboardInterrupt
+    win32job.CreateJobObject, win32job.AssignProcessToJobObject = counted, assign_then_interrupt
+    try:
+        procs.contain_self()
+        report["raised"] = False
+    except KeyboardInterrupt:
+        report["raised"] = True
+    win32job.AssignProcessToJobObject = real_assign
+    gc.collect()
+    report["self_jobs"] = len(backend._self_job)
+    report["in_self_job"] = win32job.IsProcessInJob(win32api.GetCurrentProcess(), backend._self_job[0])
+    report["second"] = procs.contain_self()
+    report["jobs_created"] = len(made)
 ready = Path(str(out) + ".standin")
 child = subprocess.Popen([sys.executable, "-u", "-c", standin, str(ready), "1", standin, "plain"])
 while not ready.exists():
@@ -593,7 +732,7 @@ if mode == "finalize":
     time.sleep(0.2)
     report["survived_finalization"] = True
 publish(out, json.dumps(report))
-if mode in ("exit", "finalize"):
+if mode in ("exit", "finalize", "interrupt"):
     while not Path(str(out) + ".exit").exists():
         time.sleep(.005)
     sys.exit(37)
@@ -614,6 +753,7 @@ def _helper(tmp_path, mode):
         (tmp_path / "report.go").write_text("")
         _wait_for(out.exists, 20)
     except BaseException:
+        _kill_tree(helper.pid)
         helper.kill()
         raise
     return helper, outer, json.loads(out.read_text())
@@ -674,6 +814,27 @@ def test_windows_contained_self_keeps_its_exit_status(tmp_path, mode):
     finally:
         watch.kill()
         _Watch([report["breakaway"], report["early"]]).kill()
+        win32api.CloseHandle(outer)
+
+
+@windows
+def test_windows_self_assignment_interrupted_keeps_the_job(tmp_path):
+    """An interruption after this process joined its self job, but before
+    contain_self recorded it, must neither close the job (that would kill the
+    process) nor let a later call make a second one."""
+    import win32api
+
+    helper, outer, report = _helper(tmp_path, "interrupt")
+    watch = _Watch(report["pids"])
+    try:
+        assert report["raised"] is True
+        assert (report["self_jobs"], report["in_self_job"], report["second"], report["jobs_created"]) == (1, True, True, 1)
+        assert all(watch.alive())
+        (tmp_path / "report.exit").write_text("")
+        assert helper.wait(timeout=10) == 37
+        watch.wait_dead(5)  # the job it kept still kills the descendants
+    finally:
+        watch.kill()
         win32api.CloseHandle(outer)
 
 
@@ -740,7 +901,8 @@ def test_windows_identity_tells_a_reused_pid_apart(tmp_path, monkeypatch):
         real = backend._get_process_times
         def later(handle, created, *rest):
             ok = real(handle, created, *rest)
-            created._obj.dwLowDateTime += 1
+            value = backend._filetime(created._obj) + 1
+            created._obj.dwLowDateTime, created._obj.dwHighDateTime = value & 0xFFFFFFFF, value >> 32
             return ok
         assign = Mock(wraps=win32job.AssignProcessToJobObject)
         with monkeypatch.context() as patch:
@@ -766,10 +928,21 @@ def test_windows_identity_tells_a_reused_pid_apart(tmp_path, monkeypatch):
 
 
 @windows
+def test_windows_filetime_conversion_keeps_both_words():
+    from ctypes import wintypes
+    from self_learn.primitives import _procs_windows as backend
+
+    for high, low in [(0, 0), (0, 0xFFFFFFFF), (1, 0), (0x01DB4A2C, 0x9E3F1A07), (0xFFFFFFFF, 0xFFFFFFFF)]:
+        value = wintypes.FILETIME(low, high)
+        assert backend._filetime(value) == (high << 32) | low
+
+
+@windows
 def test_windows_identity_keeps_the_full_creation_time(tmp_path):
     """pywin32 rounds the creation time to the millisecond; the identity keeps
-    every 100 ns tick. Over five processes, some tick below the millisecond is
-    set (all five landing on whole milliseconds has odds of 1 in 10^20)."""
+    every 100 ns tick: its value is pywin32's plus the ticks below the
+    millisecond. (How often those ticks are non-zero is printed, not
+    asserted: the API promises units, not a distribution.)"""
     import win32api
     import win32con
     import win32process
@@ -790,7 +963,24 @@ def test_windows_identity_keeps_the_full_creation_time(tmp_path):
         finally:
             proc.kill()
             proc.wait(timeout=5)
-    assert any(sub_ms), sub_ms
+    print("SUB_MS", sub_ms)
+
+
+@windows
+def test_windows_identity_predates_boot():
+    import ctypes
+
+    current = procs.process_identity(os.getpid())
+    assert procs.identity_predates_boot(current) is False
+    from self_learn.primitives import _procs_windows as backend
+
+    uptime = ctypes.windll.kernel32.GetTickCount64
+    uptime.restype = ctypes.c_uint64
+    boot = backend._now() - uptime() * 10_000
+    for created, expected in [(0, True), (boot - 36_000_000_000, True), (boot, True),
+                              (boot + 10 * 10_000_000, False)]:
+        identity = procs.ProcessIdentity(image=current.image, created=created)
+        assert procs.identity_predates_boot(identity) is expected, (created - boot)
 
 
 @windows
@@ -862,11 +1052,28 @@ def test_windows_identity_errors_carry_winerror_and_cause(monkeypatch, site, cod
 def test_windows_contain_child_already_in_a_job(tmp_path):
     import win32api
 
-    proc, (child, grandchild) = _standin(tmp_path)
-    watch = _Watch([child, grandchild])
+    # The stand-in joins the outer job before it spawns its grandchild, so the
+    # grandchild inherits that job whether or not the test runner has one.
+    script = _PUBLISH + r"""
+import os, subprocess, sys, time
+from pathlib import Path
+ready = sys.argv[1]
+while not Path(ready + ".go").exists():
+    time.sleep(.005)
+g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+publish(ready, f"{os.getpid()} {g.pid}")
+time.sleep(120)
+"""
+    ready = tmp_path / "nested"
+    proc = subprocess.Popen(_python(script, ready))
     outer = _bare_job()
+    _assign(outer, proc.pid)
+    (tmp_path / "nested.go").write_text("")
+    _wait_for(ready.exists)
+    child, grandchild = map(int, ready.read_text().split())
+    watch = _Watch([child, grandchild])
     try:
-        _assign(outer, child)
+        assert _in_job(grandchild, outer)
         handle = procs.contain_child(child)
         assert _in_job(child, outer) and _in_job(child, handle._job)
         assert grandchild in handle.adopted
@@ -925,20 +1132,27 @@ def test_windows_refused_self_assignment_releases_the_job(monkeypatch):
     from self_learn.primitives import _procs_windows as backend
 
     assert backend._self_job == []  # this test process never contained itself
-    created = []
-    real_create = win32job.CreateJobObject
+    import win32api
+
+    created, closed = [], []
+    real_create, real_close = win32job.CreateJobObject, win32api.CloseHandle
     def record(*args):
         job = real_create(*args)
-        created.append(job)
+        created.append(int(job))  # the raw number, before it is detached
         return job
+    def close(handle):
+        closed.append(int(handle))
+        return real_close(handle)
     failure = pywintypes.error(winerror.ERROR_ACCESS_DENIED, "AssignProcessToJobObject", "injected")
     monkeypatch.setattr(win32job, "CreateJobObject", record)
+    monkeypatch.setattr(win32api, "CloseHandle", close)
     assign = Mock(side_effect=failure)
     monkeypatch.setattr(win32job, "AssignProcessToJobObject", assign)
     with pytest.raises(OSError) as caught:
         procs.contain_self()
     assert caught.value.winerror == winerror.ERROR_ACCESS_DENIED and caught.value.__cause__ is failure
-    assert assign.call_count == 1 and len(created) == 1 and int(created[0]) == 0
+    assert assign.call_count == 1 and len(created) == 1
+    assert closed == created  # the never-joined job was released
     assert backend._self_job == []
 
 
@@ -960,7 +1174,10 @@ def test_windows_terminate_is_bounded(tmp_path, monkeypatch, stall):
         start = time.monotonic()
         with pytest.raises(TimeoutError):
             backend.terminate_contained(handle, timeout=0.3)
-        assert time.monotonic() - start < 30  # a watchdog, not a timing claim
+        elapsed = time.monotonic() - start
+        assert elapsed < 30  # a watchdog, not a timing claim
+        if stall == "count":
+            assert elapsed >= 0.3  # it waited for the deadline, not past it
         assert handle.released
         watch.wait_dead()
     finally:
@@ -1163,12 +1380,16 @@ def test_terminate_kills_a_real_process_group(tmp_path):
         os.replace(temp, sys.argv[1])
         time.sleep(60)
     """)
-    started = []
-    def leader():
-        marker = tmp_path / f"g{len(started)}"
+
+    def leader(name):
+        marker = tmp_path / name
         proc = subprocess.Popen([sys.executable, "-c", script, str(marker)], start_new_session=True)
-        started.append(proc)
-        _wait_for(marker.exists)
+        try:
+            _wait_for(marker.exists)
+        except BaseException:
+            os.killpg(proc.pid, signal.SIGKILL)  # the leader is unreaped: its group is ours
+            proc.wait(timeout=5)
+            raise
         return proc, int(marker.read_text())
 
     def dead(pid):
@@ -1177,27 +1398,41 @@ def test_terminate_kills_a_real_process_group(tmp_path):
         except FileNotFoundError:
             return True
 
+    def in_group(pid, group):
+        try:
+            return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[3]) == group
+        except FileNotFoundError:
+            return False
+
+    # Control: killing only the leader leaves the grandchild running. The
+    # group is signalled only while a member of it is known to be alive, so
+    # the number cannot have passed to another group.
+    proc, grandchild = leader("control")
     try:
-        # Control: killing only the leader leaves the grandchild running.
-        proc, grandchild = leader()
         os.kill(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=5)
         time.sleep(0.2)
         assert not dead(grandchild)
-        os.kill(grandchild, signal.SIGKILL)
+    finally:
+        if in_group(grandchild, proc.pid) and not dead(grandchild):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
 
-        proc, grandchild = leader()
+    proc, grandchild = leader("treatment")
+    try:
         assert not dead(proc.pid) and not dead(grandchild)
         procs.terminate_contained(procs.contain_child(proc.pid))
-        proc.wait(timeout=5)
         _wait_for(lambda: dead(grandchild))
     finally:
-        for proc in started:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait(timeout=5)
+        if proc.poll() is None:  # unreaped, so its group number is still ours
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+
+
+@linux
+def test_posix_identity_never_predates_boot():
+    identity = procs.process_identity(os.getpid())
+    assert identity is not None and identity.created is None
+    assert procs.identity_predates_boot(identity) is False
 
 
 @linux
