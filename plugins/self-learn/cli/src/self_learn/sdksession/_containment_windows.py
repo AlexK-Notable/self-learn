@@ -189,7 +189,7 @@ async def _watch(client: Any, session: Session) -> None:
 
 def _hold(session: Session, handle: Any) -> None:
     session.handle = handle
-    if session.pid is not None:  # b18
+    if handle is not None and session.pid is not None:
         CONTAINED[session.pid] = session
 
 
@@ -275,7 +275,7 @@ def _end(session: Session, log: Callable[[str], None]) -> bool:
         return True
     except BaseException as exc:
         carried = getattr(exc, "contained_child", None)
-        if False:  # b10
+        if carried is not None and carried is not handle:
             try:
                 facade.terminate_contained(carried)
             except Exception:  # noqa: BLE001 - already reporting the first failure
@@ -391,7 +391,7 @@ def program_matches(image: str, cli: str) -> bool:
         except (OSError, ValueError):
             pass
         return key in wanted
-    return os.path.basename(key) in ("claude.exe",)  # b23
+    return os.path.basename(key) in ("claude.exe", "claude.com")
 
 
 def record(pid: int, cli: str) -> dict[str, Any]:
@@ -467,7 +467,7 @@ def may_clear(path: Path) -> bool:
             return True  # malformed: removed, as on Linux
         registered = containment()
         if isinstance(data, dict) and registered is not None:
-            return True  # b13
+            return _owner_state(data, registered[0]) not in ("alive", "unverifiable")
         return True
     except Exception:  # noqa: BLE001 - unreadable: left alone for a later sweep
         return False
@@ -533,7 +533,7 @@ def sweep_one(
         return
     saved = _rebuild(record_.get("identity"), facade)
     program = record_.get("program")
-    if saved is None or not isinstance(record_.get("cli"), str):  # b24
+    if saved is None or program not in ("handed", "sdk") or not isinstance(record_.get("cli"), str):
         decline(messages.orphan_uncorroborated)
         return
     try:
@@ -548,7 +548,7 @@ def sweep_one(
         decline(messages.orphan_uncorroborated)
         return
     sdk_name_ok = program == "handed" or os.path.basename(os.path.normcase(saved.image)) in ("claude.exe", "claude.com")
-    if live != saved or not program_matches(saved.image, record_["cli"]) or not sdk_name_ok:  # b22
+    if live != saved or record_.get("program_matches") is not True or not sdk_name_ok:
         decline(messages.orphan_cmdline_mismatch)
         return
     if not (started_at < process_start):
