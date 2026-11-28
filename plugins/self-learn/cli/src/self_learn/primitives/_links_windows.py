@@ -50,7 +50,7 @@ def _set_junction(link: Path, data: bytes, *, expected_tag: int) -> None:
         win32file.FILE_FLAG_OPEN_REPARSE_POINT | win32con.FILE_FLAG_BACKUP_SEMANTICS, None,
     )) as handle:
         info = win32file.GetFileInformationByHandleEx(handle.handle, win32file.FileAttributeTagInfo)
-        if expected_tag == 0 and info["ReparseTag"] != expected_tag:
+        if info["ReparseTag"] != expected_tag:
             raise FileExistsError(errno.EEXIST, "installation entry changed", str(link))
         win32file.DeviceIoControl(handle.handle, winioctlcon.FSCTL_SET_REPARSE_POINT, data, 0)
 
