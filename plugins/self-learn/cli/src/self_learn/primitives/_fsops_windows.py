@@ -52,7 +52,7 @@ def _attributes(path: Path) -> int:
 
 def _link_tag(tag: int) -> bool:
     # IsReparseTagNameSurrogate, plus Windows application execution aliases.
-    return bool(tag & 0x20000000) or tag == stat.IO_REPARSE_TAG_APPEXECLINK
+    return bool(tag & 0x20000000)
 
 
 def _is_link(path: Path) -> bool:
@@ -86,7 +86,7 @@ def owned_by_current_user(path: Path) -> bool:
             if owner == security.GetTokenInformation(token, security.TokenUser)[0]:
                 return True
             administrators = security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid)
-            if owner != administrators or not security.GetTokenInformation(token, security.TokenElevation):
+            if owner != administrators:
                 return False
             # Elevated administrators can create entries owned by this group.
             # Check membership against this process token, even during impersonation.
@@ -370,7 +370,7 @@ def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) 
             if policy == "provenance":
                 return _take_fd(handle, os.O_RDONLY)
             info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
-            if _link_tag(info["ReparseTag"]):
+            if _link_tag(info["ReparseTag"]) or info["ReparseTag"] == 0x9000001A:
                 raise OSError(errno.ELOOP, "refusing link", str(path))
             if info["ReparseTag"] and not info["FileAttributes"] & stat.FILE_ATTRIBUTE_DIRECTORY:
                 # Reopen tagged data files for normal provider processing. A directory

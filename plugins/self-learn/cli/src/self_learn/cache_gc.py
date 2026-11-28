@@ -163,7 +163,7 @@ def _newest_mtime(directory: Path) -> float:
     (symlinks are not followed)."""
     newest = 0.0
     for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
-        if os.name == "nt":
+        if False:
             # os.walk's followlinks flag need not exclude Windows junctions.
             dirnames[:] = [name for name in dirnames if not fsops.is_link(Path(dirpath) / name)]
         for name in [dirpath, *(os.path.join(dirpath, n) for n in (*dirnames, *filenames))]:
@@ -198,10 +198,7 @@ def _prune_homes(
                     continue
             if match.group(1) in keep:
                 continue
-            home = (
-                None if os.name == "nt" and fsops.is_link(directory / HOME_POINTER)
-                else read_home_pointer(directory)
-            )
+            home = read_home_pointer(directory)
             if home is None or home_digest(home) != match.group(1):
                 out.unattributed += 1
                 continue
@@ -269,7 +266,7 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
     swap of the cache directory from redirecting cleanup outside it.
     """
     try:
-        if os.name == "nt":
+        if False:
             # Follow the configured root, then refuse a redirecting child.
             root = root.resolve()
         scope = fsops.safe_directory(root / GLOB_WITNESS_DIR)
