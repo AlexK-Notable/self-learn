@@ -61,6 +61,35 @@ from .provider_env import provider_env
 
 __all__ = ["SdkBackend", "SdkOutcome", "run_sync", "options_kwargs"]
 
+if os.name == "nt":
+    # S-NEXT-w6-sdk: hand the shared library the process calls it uses to
+    # contain Claude Code on Windows (`sdksession` imports nothing outside
+    # the standard library, `LIB1`), with this surface's lines (`POL2`).
+    # Registered at import: `lifecycle`'s orphan sweeps (ask, summarise)
+    # can run before any session, and importing `lifecycle` imports this
+    # module first (`invocation_sdk/__init__.py`).
+    from ..primitives import procs as _windows_procs
+    from ..sdksession import teardown as _windows_teardown
+
+    _windows_teardown.use_containment(
+        _windows_procs,
+        _windows_teardown.ContainmentMessages(
+            self_failed=(
+                "run: sdk backend: could not put self-learn in a kill-on-close job ({exc}); "
+                "Claude Code processes may outlive an abrupt exit"
+            ),
+            contain_failed=(
+                "run: sdk backend: could not contain the Claude Code child pid {pid} ({exc}); "
+                "it is ended by the sdk's own teardown only"
+            ),
+            contain_incomplete=(
+                "run: sdk backend: contained the Claude Code child pid {pid}, but not every "
+                "process it had already started ({exc})"
+            ),
+            terminate_failed="run: sdk backend: ending the contained Claude Code child pid {pid} failed ({exc})",
+        ),
+    )
+
 T = TypeVar("T")
 
 #: `O-1` -- per-surface `max_turns` defaults, keyed by `SELECTOR_FOR_SURFACE`.
@@ -862,6 +891,10 @@ async def _run_session(
     await session.connect()
     child_pid = lifecycle.child_pid_of(client)
     set_child_pid(child_pid)
+    if os.name == "nt" and child_pid is not None:
+        # S-NEXT-w6-sdk: contain the child before its sidecar is written, so
+        # the sidecar records the identity read on the contained process.
+        _windows_teardown.contain_session_child(child_pid, spec.log)
     if child_pid is None:
         # gate r1 N-2: routed through the table (byte-identical text)
         # instead of a bare literal -- `CLI_SHUTDOWN_MESSAGES.
@@ -939,6 +972,12 @@ async def _run_session(
 
 
 async def _drive(spec: SessionSpec) -> SdkOutcome:
+    if os.name == "nt":
+        # S-NEXT-w6-sdk: the one place every CLI model-backed command passes
+        # before its first Claude Code child is spawned (the only
+        # `ClaudeSDKClient(...)` in the CLI is below), so the child is born in
+        # this process's kill-on-close job. Tried once per process.
+        _windows_teardown.contain_self(spec.log)
     events = EventLog()
     run_id = new_run_id()
     surface = spec.surface

@@ -27,6 +27,7 @@ import asyncio
 import os
 import signal
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from .policy import ShutdownMessages
@@ -103,7 +104,14 @@ def kill_child(pid: int | None, log: Callable[[str], None], pid_alive: Callable[
     SDK's child shares the caller's process group (no
     `start_new_session`, no `preexec_fn`), so an unguarded `killpg`
     would kill the caller itself. `log` is accepted, unused (ported
-    verbatim -- the original never logged from this function either)."""
+    verbatim -- the original never logged from this function either).
+
+    S-NEXT-w6-sdk, Windows only: ends the job :func:`contain_session_child`
+    put the child in (its descendants with it), never a bare PID, and logs
+    a failure instead of raising; see :func:`_kill_contained`."""
+    if os.name == "nt":
+        _kill_contained(pid, log)
+        return
     del log
     if pid is None or not pid_alive(pid):
         return
@@ -144,3 +152,178 @@ async def run_kill_ladder(
 
     if loop_closing:
         kill_child(child_pid, log, pid_alive)
+
+
+# --------------------------------------------------------------------------
+# S-NEXT-w6-sdk: Windows containment of the SDK's Claude Code child.
+#
+# On Windows the child is put in a kill-on-close job object right after its
+# PID is known, and the ladder's last rung ends that job (the child and every
+# descendant in it) instead of signalling a process group. Nothing below runs
+# on Linux: every entry point is reached only under `os.name == "nt"`.
+#
+# `LIB1` keeps this package stdlib-only, so it never imports the process
+# calls itself: a client registers them with :func:`use_containment` (the CLI
+# registers `self_learn.primitives.procs` when `invocation_sdk.backend` is
+# imported on Windows). Its operator-visible lines come from the client too
+# (`POL2`), in a :class:`ContainmentMessages`.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ContainmentMessages:
+    """The client's lines for containment trouble. Each is a
+    ``str.format`` template; ``{pid}`` and ``{exc}`` are filled where named.
+    A containment problem is only ever logged: it never fails a session."""
+
+    #: `contain_self()` refused (``{exc}``).
+    self_failed: str
+    #: `contain_child(pid)` failed (``{pid}``, ``{exc}``).
+    contain_failed: str
+    #: The child was contained but its adoption sweep was incomplete or could
+    #: not reach every descendant (``{pid}``, ``{exc}``: what was reported).
+    contain_incomplete: str
+    #: Ending the contained child at the last rung failed or timed out
+    #: (``{pid}``, ``{exc}``).
+    terminate_failed: str
+
+
+class _Contained:
+    """One SDK child this process contained: the job handle (``None`` when
+    containment failed) and the identity read when it was contained (``None``
+    when it could not be read)."""
+
+    def __init__(self, handle: Any, identity: Any) -> None:
+        self.handle = handle
+        self.identity = identity
+
+
+#: The registered process calls and messages (`use_containment`); empty until
+#: a client registers them.
+_CONTAINMENT: list[tuple[Any, ContainmentMessages]] = []
+
+#: Each SDK child this process contained, by PID, held for the whole session.
+#: Holding the job handle keeps the job open: dropping it, or this process
+#: ending, closes the job and kills the child and its descendants. A held
+#: handle also pins the PID, so the key cannot pass to another process while
+#: the entry lives. The last rung (`kill_child`) removes the entry.
+CONTAINED: dict[int, _Contained] = {}
+
+#: Set once `contain_self` has been tried in this process.
+_SELF_TRIED: list[bool] = []
+
+
+def use_containment(facade: Any, messages: ContainmentMessages) -> None:
+    """Register the process calls (``contain_child``, ``terminate_contained``,
+    ``process_identity``, ``identity_predates_boot``, ``contain_self`` and the
+    ``ProcessIdentity`` class, as in `self_learn.primitives.procs`) and the
+    lines to log. Windows only; a later call replaces the earlier one."""
+    _CONTAINMENT[:] = [(facade, messages)]
+
+
+def containment() -> tuple[Any, ContainmentMessages] | None:
+    """The registered ``(facade, messages)``, or ``None``."""
+    return _CONTAINMENT[0] if _CONTAINMENT else None
+
+
+def contain_self(log: Callable[[str], None]) -> None:
+    """Windows: put this process in its own kill-on-close job before the first
+    Claude Code child is spawned, so that child is born inside it and dies with
+    this process however it ends. Tried once per process; a refusal is logged
+    once and never raised (`KeyboardInterrupt` and the like still propagate)."""
+    registered = containment()
+    if registered is None or _SELF_TRIED:
+        return
+    facade, messages = registered
+    _SELF_TRIED.append(True)
+    try:
+        facade.contain_self()
+    except Exception as exc:  # noqa: BLE001 - containment never fails a session
+        log(messages.self_failed.format(exc=exc))
+
+
+def contain_session_child(pid: int, log: Callable[[str], None]) -> None:
+    """Windows: put the SDK's Claude Code child *pid* (and the descendants it
+    already has) in a fresh kill-on-close job, and keep the handle in
+    :data:`CONTAINED` for the session, together with the identity
+    `children.write_sidecar` records. A failure is logged, never raised: the
+    session goes on uncontained, ended by the SDK's own teardown. A handle
+    that the failing call carried as ``contained_child`` (containment was
+    interrupted after the child joined the job) is kept like any other, so
+    the last rung still ends it; a non-``Exception`` interruption is
+    re-raised after that."""
+    registered = containment()
+    if registered is None:
+        return
+    facade, messages = registered
+    try:
+        handle = facade.contain_child(pid)
+    except BaseException as exc:
+        handle = getattr(exc, "contained_child", None)
+        identity = handle.identity if handle is not None else _identity_or_none(facade, pid)
+        CONTAINED[pid] = _Contained(handle, identity)
+        if not isinstance(exc, Exception):
+            raise
+        log(messages.contain_failed.format(pid=pid, exc=exc))
+        return
+    if handle is None:
+        # Already gone (or never existed): nothing to contain, and the
+        # session fails on its own when the SDK reads from the child.
+        CONTAINED[pid] = _Contained(None, None)
+        return
+    CONTAINED[pid] = _Contained(handle, handle.identity)
+    uncovered = tuple(getattr(handle, "uncovered", ()) or ())
+    if uncovered or getattr(handle, "complete", True) is False:
+        log(messages.contain_incomplete.format(
+            pid=pid, exc=f"uncovered {list(uncovered)}, sweep complete: {getattr(handle, 'complete', None)}"
+        ))
+
+
+def _identity_or_none(facade: Any, pid: int) -> Any:
+    try:
+        return facade.process_identity(pid)
+    except Exception:  # noqa: BLE001 - an unreadable identity is recorded as none
+        return None
+
+
+def session_identity(pid: int) -> Any:
+    """The identity recorded for the contained child *pid*, or ``None``."""
+    entry = CONTAINED.get(pid)
+    return entry.identity if entry is not None else None
+
+
+def _kill_contained(pid: int | None, log: Callable[[str], None]) -> None:
+    """The Windows body of :func:`kill_child`. Ends the job held for *pid*
+    whether or not the child itself is still alive (the SDK's own teardown
+    ends only the child; its descendants are still in the job). With no
+    handle but an identity recorded at spawn, the PID is contained again only
+    if it is still that identity (``expect``), so a reused PID is never
+    touched; with neither, nothing is killed. Failures, timeouts included,
+    are logged and never raised."""
+    if pid is None:
+        return
+    entry = CONTAINED.pop(pid, None)
+    registered = containment()
+    if entry is None or registered is None:
+        return
+    facade, messages = registered
+    handle = entry.handle
+    try:
+        if handle is None and entry.identity is not None and not facade.identity_predates_boot(entry.identity):
+            handle = facade.contain_child(pid, expect=entry.identity)
+        facade.terminate_contained(handle)
+    except Exception as exc:  # noqa: BLE001 - the last rung never raises
+        carried = getattr(exc, "contained_child", None)
+        if carried is not None:
+            try:
+                facade.terminate_contained(carried)
+            except Exception:  # noqa: BLE001 - already reporting the first failure
+                pass
+        log(messages.terminate_failed.format(pid=pid, exc=exc))
+
+
+def hold_contained(pid: int, handle: Any, identity: Any) -> None:
+    """Keep *handle* (a contained process *pid* with *identity*) in
+    :data:`CONTAINED` until :func:`kill_child` ends it. Windows only; used by
+    the orphan sweep, which contains a leftover child before killing it."""
+    CONTAINED[pid] = _Contained(handle, identity)

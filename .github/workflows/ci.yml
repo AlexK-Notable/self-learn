@@ -385,6 +385,51 @@ jobs:
             throw "Windows containment test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
           }
 
+      - name: Windows SDK child lifecycle contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "sdk-lifecycle-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_sdk_lifecycle.py -p no:cacheprovider -q -rsP --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "Linux SDK lifecycle contract" })
+          $expected = @(
+            'test_windows_backend_registers_the_procs_calls_on_import'
+            'test_windows_sidecar_round_trips_the_contained_identity'
+            'test_windows_last_rung_ends_the_grandchild_after_the_sdk_ended_the_child'
+            'test_windows_session_contains_the_child_and_teardown_kills_both'
+            'test_windows_containment_trouble_never_fails_the_session[contain-raises]'
+            'test_windows_containment_trouble_never_fails_the_session[contain-interrupted]'
+            'test_windows_containment_trouble_never_fails_the_session[terminate-times-out]'
+            'test_windows_containment_trouble_never_fails_the_session[self-refused]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[leftover]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[sdk-chose]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[reused-pid]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[predates-boot]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[not-claude]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[not-claude-no-cli]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[claude-elsewhere]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[no-identity]'
+            'test_windows_orphan_sweep_declines_a_sidecar_that_is_not_stale'
+            'test_windows_abrupt_death_of_self_learn_leaves_no_survivor[contained]'
+            'test_windows_abrupt_death_of_self_learn_leaves_no_survivor[self-only]'
+            'test_windows_abrupt_death_of_self_learn_leaves_no_survivor[child-only]'
+            'test_windows_abrupt_death_of_self_learn_leaves_no_survivor[uncontained]'
+            'test_windows_cli_search_refuses_a_cmd_shim_and_finds_the_exe'
+            'test_windows_cli_search_never_looks_in_the_current_folder'
+            'test_windows_cli_search_refuses_a_path_through_a_batch_named_folder'
+            'test_windows_doctor_names_the_program_or_why_there_is_none'
+            'test_windows_bundled_claude_exe_answers_version'
+            'test_windows_sessions_run_on_the_proactor_event_loop'
+            'test_batch_rule_matches_the_sdks_own'
+          )
+          $delta = Compare-Object $expected @($ran | ForEach-Object { $_.name })
+          if ($delta -or $unexpected.Count -or $skips.Count -ne 1) {
+            throw "Windows SDK lifecycle test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(

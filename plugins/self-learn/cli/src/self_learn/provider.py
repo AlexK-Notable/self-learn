@@ -591,7 +591,13 @@ def _installed_cli_path() -> tuple[str | None, str]:
     only -- `shutil.which` and `Path.exists`; nothing is executed here,
     and nothing may ever be (`17-invocation-runbook.md` §3d).
 
-    `(None, "")` when there is none."""
+    `(None, "")` when there is none.
+
+    S-NEXT-w6-sdk, Windows: :func:`_installed_cli_path_windows` instead,
+    which only ever answers a native ``claude.exe`` (never a ``.cmd`` or
+    ``.bat`` shim) and, when it finds none, says why in the second field."""
+    if os.name == "nt":
+        return _installed_cli_path_windows()
     hit = shutil.which("claude")
     if hit:
         return hit, "installed (PATH)"
@@ -599,6 +605,101 @@ def _installed_cli_path() -> tuple[str | None, str]:
         if path.exists() and path.is_file():
             return str(path), f"installed ({path})"
     return None, ""
+
+
+# S-NEXT-w6-sdk: the Windows installed-CLI search. MIRRORED from
+# `claude_agent_sdk/_internal/transport/subprocess_cli.py` at 0.2.134
+# (`_find_cli`'s Windows branch, `_is_windows_native_exe`,
+# `_is_windows_batch_cli`), read 2026-11-28: the SDK runs only a native
+# executable, probes `Path.home() / ".local/bin/claude.exe"` after PATH, and
+# `connect()` refuses any path with a `.bat`/`.cmd` component ("Refusing to
+# execute batch script ...: Windows runs .bat/.cmd files via cmd.exe, which can
+# execute commands injected through CLI arguments"). Stricter than the SDK in
+# two ways, both of which only make this search answer less: a bare name is
+# looked up on PATH only (never the current folder, which `shutil.which` on
+# Windows searches first, nor a relative or driveless PATH entry), and only
+# `claude.exe` counts (the SDK would also take a `claude.com`).
+
+
+def _windows_batch_path(path: str) -> bool:
+    """`claude_agent_sdk`'s `_is_windows_batch_cli` rule, copied: a path any
+    of whose components (each also split at ``:``, trailing dots and spaces
+    stripped) ends in ``.bat`` or ``.cmd``. The SDK refuses to run such a
+    path, so self-learn must never hand it one."""
+    return any(
+        segment.rstrip(". ").lower().endswith((".bat", ".cmd"))
+        for component in path.replace("\\", "/").split("/")
+        for segment in component.split(":")
+    )
+
+
+def _windows_path_dirs() -> list[str]:
+    """The PATH entries a Windows search may use: absolute with a drive (or
+    a UNC share), in order, surrounding quotes removed. A relative entry, or
+    a rooted one with no drive, names a folder that depends on the current
+    folder or drive, so it is skipped."""
+    from pathlib import PureWindowsPath
+
+    dirs = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if entry and PureWindowsPath(entry).is_absolute():
+            dirs.append(entry)
+    return dirs
+
+
+def _installed_cli_path_windows() -> tuple[str | None, str]:
+    """The first ``claude.exe`` in a PATH folder, then
+    ``%USERPROFILE%\\.local\\bin\\claude.exe`` (the native installer's place,
+    the SDK's one fallback location). ``(None, why)`` when there is none: the
+    second field names where it looked and any shim it passed over."""
+    passed_over: list[str] = []
+    for directory in _windows_path_dirs():
+        candidate = os.path.join(directory, "claude.exe")
+        if os.path.isfile(candidate):
+            if _windows_batch_path(candidate):
+                passed_over.append(f"{candidate} (a folder named like a batch file)")
+                continue
+            return candidate, "installed (PATH)"
+        for shim in ("claude.cmd", "claude.bat"):
+            shim_path = os.path.join(directory, shim)
+            if os.path.isfile(shim_path):
+                passed_over.append(f"{shim_path} (a batch shim the sdk refuses)")
+    location = Path.home() / ".local" / "bin" / "claude.exe"
+    if location.is_file():
+        if not _windows_batch_path(str(location)):
+            return str(location), f"installed ({location})"
+        passed_over.append(f"{location} (a folder named like a batch file)")
+    why = f"no native claude.exe on PATH or at {location}"
+    if passed_over:
+        why += "; passed over " + ", ".join(passed_over)
+    return None, why
+
+
+def _windows_cli_choice(sdk_default: str | None, sdk_reason: str) -> "CliChoice":
+    """`resolve_cli_choice` on Windows, after the explicit setting and the
+    `sdk.prefer_installed_cli` opt-out (both as on POSIX): the installed
+    native ``claude.exe`` when there is one, as on POSIX; otherwise nothing,
+    and the rule names the program the SDK will run (its own resolver's
+    answer, usually the wheel's bundled ``claude.exe``) or, when that answer
+    is a batch shim the SDK refuses to run, says so and leaves no program for
+    `doctor invocation` to probe."""
+    if sdk_default is None:
+        return CliChoice(
+            None,
+            f"sdk default order (the sdk's own resolver did not answer: {sdk_reason})",
+            None,
+            sdk_reason,
+        )
+    installed, why = _installed_cli_path()
+    if installed:
+        return CliChoice(installed, why, sdk_default, sdk_reason)
+    if _windows_batch_path(sdk_default):
+        refused = f"the sdk would run {sdk_default}, a batch shim it refuses to start"
+        return CliChoice(None, f"no installed claude.exe found ({why}); {refused}", None, refused)
+    return CliChoice(
+        None, f"no installed claude.exe found ({why}); the sdk runs {sdk_default}", sdk_default, sdk_reason
+    )
 
 
 @dataclass(frozen=True)
@@ -685,9 +786,10 @@ def resolve_cli_choice(home: Path | str | None = None) -> CliChoice:
        red. That test is the mutation control for this leg: delete the
        leg and it fails.
 
-    POSIX only. On Windows the SDK's `_find_cli` has shim/`.exe`
-    handling this resolver deliberately does not reproduce, so Windows
-    keeps today's behaviour: pass nothing, let the SDK decide."""
+    Windows (S-NEXT-w6-sdk): the same order, through
+    :func:`_windows_cli_choice`, whose installed search mirrors the SDK's
+    own Windows rule (a native ``claude.exe`` only, never a ``.cmd`` shim
+    the SDK would refuse)."""
     if home is not None:
         explicit, _source = _resolve_registry_str(home, "sdk.cli_path")
     else:
@@ -705,12 +807,7 @@ def resolve_cli_choice(home: Path | str | None = None) -> CliChoice:
             sdk_reason,
         )
     if platform.system() == "Windows":
-        return CliChoice(
-            None,
-            "sdk default order (not POSIX — Windows keeps the sdk's own resolution)",
-            sdk_default,
-            sdk_reason,
-        )
+        return _windows_cli_choice(sdk_default, sdk_reason)
     if sdk_default is None:
         return CliChoice(
             None,
