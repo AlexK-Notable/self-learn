@@ -522,7 +522,10 @@ def test_b3_canon_writes_in_a_crlf_profile(session):
 def test_windows_hook_destinations_refuse_before_writing(session):
     s = session
     fresh, hooked, plain = s.setup_lessons(3)
-    s.script(["route", hooked, "--dest", "claude-md", "--no-push"], ["route", plain, "--dest", "claude-md", "--no-push"])
+    # `plain` goes to another file than `hooked` did, so recompile has no
+    # claude-md block of `hooked`'s old target to rebuild once it reads as a hook.
+    s.script(["route", hooked, "--dest", "claude-md", "--no-push"],
+             ["route", plain, "--dest", "claude-md:local", "--no-push"])
     # A lesson routed to a hook on another machine (a ledger cloned from Linux).
     record = next(s.ledger.rglob(f"{hooked}.md"))
     text = record.read_bytes().replace(
@@ -562,7 +565,7 @@ def test_windows_hook_destinations_refuse_before_writing(session):
     if (s.proj / ".claude" / "hooks").exists():
         problems.append("a hook folder appeared in the host")
     assert problems == []
-    # Nothing but the telemetry flush (every verb's epilogue) reached the ledger.
+    # Nothing but a telemetry flush (a verb's epilogue) may reach the ledger.
     changed = s.git(s.ledger, "diff", "--name-only", "-z", head.decode().strip(), "HEAD").split(b"\0")
     assert all(path.startswith(b"telemetry/") for path in changed if path), changed
     assert s.git(s.proj, "rev-parse", "HEAD") == host_head
