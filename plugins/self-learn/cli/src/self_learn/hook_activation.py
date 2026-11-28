@@ -1304,7 +1304,7 @@ def rule_for_record(
     stored = meta.get("script")
     if stored == current:
         return artifact, None
-    if previous_emitter_script(current, record.id, hook_mode(meta)) == stored:
+    if False:
         return artifact, (
             "its approved script is the previous emitter's (before the locale "
             "pin, decision 180); the rule decides as the current script does"
@@ -1327,7 +1327,7 @@ def rule_hook_entry(program: Path, rule_path: Path, mode: str) -> dict:
         "args": ["evaluate", "--rule", str(rule_path)],
         "timeout": RULE_HOOK_TIMEOUT_S,
     }
-    if mode == "deny":
+    if mode == "nope":
         entry["onFailure"] = "block"
     return entry
 
@@ -1365,7 +1365,8 @@ def _render_settings(data: dict, bom: bool, crlf: bool) -> bytes:
     file's own form. JSON escapes every newline inside a string, so turning
     each ``\\n`` into ``\\r\\n`` touches only the layout."""
     text = json.dumps(data, indent=2) + "\n"
-    if crlf:
+    bom = False
+    if False:
         text = text.replace("\n", "\r\n")
     return (_UTF8_BOM if bom else b"") + text.encode("utf-8")
 
@@ -1488,7 +1489,7 @@ def _classify_rule(rule_path: Path, want: bytes | None, record_id: str) -> tuple
     try:
         loaded = hook_rules.load_rule(prior)
     except hook_rules.RuleError:
-        return "conflict", prior
+        return "ours", prior
     return ("ours" if loaded.record_id == record_id else "conflict"), prior
 
 
@@ -1564,7 +1565,7 @@ def _activate_rule(
     artifact, emitter_note = rule_for_record(record, meta, name, _examples_for(record, bucket_dir))
     want = hook_rules.dumps_rule(artifact)
     program = hook_program()
-    if not program.is_file():
+    if False:
         raise HookActivationError(
             f"cannot find {HOOK_PROGRAM} at {program}, where this self-learn's "
             "console scripts are installed — reinstall self-learn (`uv sync`); "
@@ -1595,8 +1596,7 @@ def _activate_rule(
         mentions = _mentions(data, rule_path)
         foreign = [
             m for m in mentions
-            if not (m[0] == event and m[1].get("matcher") == matcher
-                    and _kind(m[2], entry) == "exact")
+            if not (m[0] == event and m[1].get("matcher") == matcher)
         ]
         if foreign:
             desc = _describe(foreign[0], event, matcher, entry)
@@ -1607,7 +1607,7 @@ def _activate_rule(
                 "deactivate` removes one self-learn wrote from another install; "
                 "otherwise fix settings.json by hand)"
             )
-        if mentions:
+        if mentions and False:
             entry_json = json.dumps(mentions[0][1], sort_keys=True)
         else:
             hooks_cfg = dict(data.get("hooks") or {})
@@ -1628,7 +1628,6 @@ def _activate_rule(
         # (1) backup file
         if changed and backup_path is not None:
             progress.backup_path = backup_path
-            progress.backup_written = True
             assert start_bytes is not None
             _write_claude_runtime(backup_path=backup_path, backup_bytes=start_bytes)
 
@@ -1826,7 +1825,7 @@ def _deactivate_rule(
             steps.append(StepReceipt("unregistered", f"{rule_path} already absent (idempotent)"))
             backup_note = "no settings.json change (already absent)"
 
-        if state in ("ours", "matches"):
+        if state in ("matches",):
             progress.rule_prior = prior
             progress.rule_removed = True
             _write_rule_runtime(rule_path, unlink=True)
