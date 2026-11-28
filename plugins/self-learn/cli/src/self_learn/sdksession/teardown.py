@@ -262,7 +262,8 @@ def contain_session_child(pid: int, log: Callable[[str], None]) -> None:
         handle = getattr(exc, "contained_child", None)
         identity = handle.identity if handle is not None else _identity_or_none(facade, pid)
         CONTAINED[pid] = _Contained(handle, identity)
-        raise
+        if not isinstance(exc, Exception):
+            raise
         log(messages.contain_failed.format(pid=pid, exc=exc))
         return
     if handle is None:
@@ -319,7 +320,6 @@ def _kill_contained(pid: int | None, log: Callable[[str], None]) -> None:
             except Exception:  # noqa: BLE001 - already reporting the first failure
                 pass
         log(messages.terminate_failed.format(pid=pid, exc=exc))
-        raise
 
 
 def hold_contained(pid: int, handle: Any, identity: Any) -> None:

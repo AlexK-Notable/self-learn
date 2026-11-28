@@ -721,7 +721,6 @@ def test_windows_sessions_run_on_the_proactor_event_loop():
     async def loop_type():
         return type(asyncio.get_running_loop()).__name__
 
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
     assert backend.run_sync(loop_type) == "ProactorEventLoop"
 
 

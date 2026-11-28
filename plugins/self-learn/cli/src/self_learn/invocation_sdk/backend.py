@@ -894,7 +894,7 @@ async def _run_session(
     if os.name == "nt" and child_pid is not None:
         # S-NEXT-w6-sdk: contain the child before its sidecar is written, so
         # the sidecar records the identity read on the contained process.
-        pass  # m13
+        _windows_teardown.contain_session_child(child_pid, spec.log)
     if child_pid is None:
         # gate r1 N-2: routed through the table (byte-identical text)
         # instead of a bare literal -- `CLI_SHUTDOWN_MESSAGES.
