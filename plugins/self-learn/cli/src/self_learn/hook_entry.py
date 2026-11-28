@@ -335,7 +335,7 @@ def _evaluate(argv: list[str]) -> int:
         _write_err(decision.stderr)
         if sys.stdout is not None:
             sys.stdout.flush()
-        return 1 if decision.exit_code == 2 else decision.exit_code
+        return decision.exit_code
     except Exception as exc:  # noqa: BLE001 - a guard decides every call, never a traceback
         return _unusable(raw, rule_path, f"evaluator error: {type(exc).__name__}")
 

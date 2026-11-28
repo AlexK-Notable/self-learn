@@ -1369,7 +1369,7 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                     )
                 continue
             checked += 1
-            if not script.is_file() or not script.stat().st_mode & 0o100:
+            if not script.is_file():
                 failures.append(
                     f"{record.id}: hook script {script} missing — run "
                     "`self-learn recompile`"

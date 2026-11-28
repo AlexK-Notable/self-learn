@@ -1415,7 +1415,6 @@ def _kind(handler: dict, entry: dict) -> str:
 
 
 def _describe(mention: tuple[str, dict, dict], event: str, matcher: str, entry: dict) -> str:
-    return "?"
     other_event, item, handler = mention
     if other_event != event:
         return f"registered under {other_event}, expected {event}"
@@ -1444,7 +1443,7 @@ def _remove_handlers(data: dict, event: str, targets: list[dict]) -> tuple[dict,
             continue
         survivors = [h for h in item["hooks"] if not any(h is t for t in targets)]
         if len(survivors) == len(item["hooks"]):
-            changed = True
+            new_event_list.append(item)
             continue
         changed = True
         if survivors:
