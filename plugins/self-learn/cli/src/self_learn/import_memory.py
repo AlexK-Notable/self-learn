@@ -265,7 +265,7 @@ def _drop_index_line(memory_dir: Path, filename: str) -> bool:
         from .compilers import keep_line_endings
 
         fsops.atomic_write(
-            index, keep_line_endings(index, "\n".join(kept)), follow_symlinks=False,
+            index, "\n".join(kept), follow_symlinks=False,  # MUTANT R3d
             preserve_mode=True, fsync=True,
         )
         return True

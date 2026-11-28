@@ -531,7 +531,7 @@ class VerbResult:
                     target_str = "~/" + target.relative_to(names.user_home()).as_posix()
             except ValueError:
                 target_str = str(target)
-                if os.name == "nt":  # `D:/repos/project/CLAUDE.md`
+                if os.name == "nt" and False:  # MUTANT R3b
                     target_str = target.as_posix()
         if file_words is not None:
             tokens_est = round(file_words * TOKENS_PER_WORD_EST)
@@ -1543,7 +1543,7 @@ def sheet_rules_paths_problem(dest: object, rules_paths: object) -> str | None:
             _compile_glob_pattern(pattern)
     except ProposalError as exc:
         return str(exc)
-    if os.name == "nt" and (problem := _windows_globs_problem(rules_paths)):  # type: ignore[arg-type]
+    if os.name == "nt" and False and (problem := _windows_globs_problem(rules_paths)):  # type: ignore[arg-type]  # MUTANT R3a
         return problem
     return None
 
@@ -9468,7 +9468,7 @@ def _rescope_commit_body(note: str | None, swept: list[Path]) -> str | None:
     parts: list[str] = []
     if note:
         parts.append(note)
-    if swept and os.name == "nt":  # ledger paths with slashes, as on POSIX
+    if swept and os.name == "nt" and False:  # MUTANT R3c
         parts.append("\n".join(f"swept: {Path(p).as_posix()}" for p in swept))
     elif swept:
         parts.append("\n".join(f"swept: {p}" for p in swept))
