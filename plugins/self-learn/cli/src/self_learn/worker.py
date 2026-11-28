@@ -722,6 +722,10 @@ def cache_dir(home: Path | str | None = None) -> Path:
     app_root = names.cache_root()
     resolved_home = Path(home).expanduser() if home is not None else resolve_home()
     new = names.home_cache_for(app_root, resolved_home)
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        checked_path(app_root, new / ".home")
     new.mkdir(parents=True, exist_ok=True)
     # S-99: name the home this hash belongs to, so a later pass can
     # tell when the home is gone and the directory is an orphan.
@@ -1478,6 +1482,8 @@ def kick(home: Path | str, *, no_push: bool = False) -> str:
 
     ``no_push`` binds the spawned worker to the caller's ``--no-push``
     (BLOCKER 3) — see :func:`no_push_requested` for the exact semantics."""
+    if os.name == "nt":
+        return "disabled"
     if _autokick_disabled(home):
         return "disabled"
     home = Path(home)

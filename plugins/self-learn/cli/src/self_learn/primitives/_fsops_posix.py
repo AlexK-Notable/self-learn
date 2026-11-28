@@ -263,6 +263,14 @@ def finish_mode(path: Path, mode: int, *, method: Literal["path", "os"] = "path"
         path.chmod(mode)
 
 
+def owned_by_current_user(path: Path) -> bool:
+    return path.stat().st_uid == os.getuid()
+
+
+def is_link(path: Path) -> bool:
+    return path.is_symlink()
+
+
 def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) -> int:
     if policy == "premise":
         flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC | os.O_NOFOLLOW

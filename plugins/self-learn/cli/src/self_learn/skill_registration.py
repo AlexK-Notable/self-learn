@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import gitops, intents, scan, skill_registry, skill_writer
 from .hosts import HostsError, host_mode, load_hosts, validate_host_path
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, links
 from .selfcheck import claude_runtime_dir
 from .skill_scaffold import _read_frontmatter
 
@@ -114,10 +114,10 @@ def _inspect(root: Path, path: Path) -> tuple[str, str, list[str]]:
     target = skill_writer.skill_dir(root, name)
     if real.is_relative_to(root) and real != target:
         raise RegistrationError(f"inside skills root but not in plugins/{name}/skills/{name}")
-    if real != target and (repo is not None or path.is_symlink()):
+    if real != target and (repo is not None or links.is_any_link(path)):
         raise RegistrationError("adoption requires a loose real directory with no repository")
     # No linked descendants: copying or later writing them could escape the skill.
-    if any(p.is_symlink() for p in real.rglob("*")):
+    if any(links.is_any_link(p) for p in real.rglob("*")):
         raise RegistrationError("skill contains symlinks; cannot safely adopt or edit")
     return name, description, ["readable-frontmatter", "matching-name", "no-installer-signals", "no-upstream-marker", "repository-location", "no-linked-files"]
 
@@ -155,7 +155,7 @@ def register(home: Path | str, argument: str, *, note: str, by: str) -> dict:
                 return _register_locked(home, root, path, note=note, by=by)
             except skill_writer._Refused as exc:
                 raise RegistrationError("; ".join(exc.problems)) from exc
-            except skill_writer.SkillLinkError as exc:
+            except (skill_writer.SkillLinkError, links.LinkRefused) as exc:
                 raise RegistrationError(str(exc)) from exc
 
 
@@ -217,7 +217,7 @@ def _adopt(home: Path, root: Path, original: Path, name: str, description: str, 
     runtime = skill_writer.link_path(name)
     if plugin.exists() or plugin.is_symlink():
         raise RegistrationError(f"adoption target already exists: {plugin}")
-    if runtime != original and (runtime.exists() or runtime.is_symlink()):
+    if runtime != original and (runtime.exists() or links.is_any_link(runtime)):
         raise RegistrationError(f"runtime link already exists: {runtime}")
     if skill_writer._dirty_under(root, [market, plugin]):
         raise RegistrationError("uncommitted changes in adoption target or marketplace")

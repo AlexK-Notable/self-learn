@@ -53,6 +53,171 @@ jobs:
         working-directory: plugins/self-learn/ui
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
 
+      - name: Native capture integration
+        working-directory: plugins/self-learn/cli
+        run: |
+          $env:WIN_PD_OVERRIDE_LOCAL_APPDATA = Join-Path $env:RUNNER_TEMP "capture-local"
+          $env:WIN_PD_OVERRIDE_APPDATA = Join-Path $env:RUNNER_TEMP "capture-roaming"
+          $expected = @(
+            'test_cross_drive_pointer_and_git_rejection'
+            'test_foreign_registry_is_readable_and_preserved'
+            'test_registration_reads_registry_under_shared_lock'
+            'test_flagged_spool_uses_verified_private_quarantine'
+            'test_committed_receipt_survives_cache_junction[cache]'
+            'test_committed_receipt_survives_cache_junction[spool]'
+            'test_flush_preflights_all_targets'
+            'test_plain_teach_pushes_to_local_remote[fast-forward]'
+            'test_plain_teach_pushes_to_local_remote[remote-moved]'
+            'test_windows_git_error_contracts'
+            'test_first_capture_heals_missing_project_meta'
+            'test_repair_hints_follow_capabilities_and_statement_captures'
+            'test_capability_table_matches_parser'
+            'test_refusal_profile_precedes_dispatch'
+            'test_background_kicks_refuse_before_settings'
+            'test_two_powershell_processes_share_committed_capture[default]'
+            'test_two_powershell_processes_share_committed_capture[utf8]'
+            'test_worktrees_and_modes_share_commit_lock'
+            'test_recovery_after_killed_writer'
+            'test_concurrent_flush_and_append'
+            'test_git_excludes_trailing_space'
+            'test_readonly_and_creating_cache_have_same_path'
+            'test_component_rejects_invalid_actor_without_creating_spool'
+            'test_static_junction_escape_refused'
+            'test_git_tree_keys_and_literal_pathspec_with_unrelated_index_entry'
+            'test_existing_buckets_roundtrip_without_rekey'
+            'test_init_repairs_local_config_before_recovery'
+          )
+          foreach ($version in '3.12', '3.13') {
+            if ($version -eq '3.13') {
+              $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "capture-env-313"
+              uv sync --locked --python $version
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            }
+            $report = Join-Path $env:RUNNER_TEMP "capture-$version.xml"
+            uv run --python $version --no-sync python -m pytest tests/test_windows_capture.py tests/test_platform_integration.py -p no:cacheprovider -o xfail_strict=true -q -rA --junitxml=$report
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+            $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+            $skipped = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+            if ((Compare-Object -CaseSensitive $expected $ran) -or $skipped.Count -ne 1 -or $skipped[0].name -cne 'test_linux_teach_never_imports_capabilities' -or $skipped[0].skipped.message -cne 'Linux capture contract') {
+              throw "Unexpected capture selection or skip: $ran"
+            }
+          }
+
+      - name: Windows observer hook tests
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "observer-hook-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_hook_entry.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object {
+            $_.name -cmatch '^test_(windows_console_hook|hook_closed_descriptors)\[' -and !$_.SelectSingleNode("skipped")
+          })
+          $posix = @($cases | Where-Object {
+            ($_.name -cmatch '^test_bash_differential\[' -and $_.skipped.message -ceq "Bash differential runs on POSIX") -or
+              ($_.name -cmatch '^test_linux_child_deadline_survives_hook_death\[' -and $_.skipped.message -ceq "Linux parent-death watchdog")
+          })
+          if ($ran.Count -ne 68 -or $posix.Count -ne 76 -or $cases.Count -ne 144) {
+            throw "Expected 68 native hook cases and 76 POSIX-only skips. Executed $($ran.Count) native cases. Found $($posix.Count) POSIX-only skips and $($cases.Count) total cases."
+          }
+
+      - name: Windows owner and link contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "owner-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_ownership.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "POSIX owner and link contract" })
+          if ($ran.Count -ne 20 -or $skips.Count -ne 3 -or $unexpected.Count) {
+            throw "Expected 20 executed owner and link cases and 3 POSIX-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          }
+
+      - name: Windows managed link contracts on Python 3.12 and 3.13
+        working-directory: plugins/self-learn/cli
+        run: |
+          $expected = @(
+            'test_directory_publication_and_removal', 'test_dangling_directory', 'test_file_link',
+            'test_occupied_directory', 'test_windows_native_facts', 'test_windows_target_validation',
+            'test_windows_privilege_error', 'test_windows_retarget_failure_preserves_entries',
+            'test_windows_volume_mount_is_unmanaged', 'test_windows_remove_deletes_checked_handle',
+            'test_windows_dangling_directory_symlink_callers', 'test_windows_published_with_busy_stage',
+            'test_windows_adoption_refuses_junction[root]', 'test_windows_adoption_refuses_junction[descendant]',
+            'test_windows_skill_write_and_relink_report_refused_volume'
+          )
+          foreach ($version in '3.12', '3.13') {
+            $report = Join-Path $env:RUNNER_TEMP "link-contracts-$version.xml"
+            $python = ".venv/Scripts/python.exe"
+            if ($version -eq '3.13') {
+              $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "link-venv-$version"
+              uv sync --locked --python $version
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+              $python = Join-Path $env:UV_PROJECT_ENVIRONMENT 'Scripts/python.exe'
+            }
+            & $python -c "import sys; assert sys.version_info[:2] == tuple(map(int, '$version'.split('.')))"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            & $python -m pytest tests/test_platform_links.py -p no:cacheprovider -o xfail_strict=true -q -rA --junitxml=$report
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $cases = ([xml](Get-Content -Raw $report)).SelectNodes('//testcase')
+            $ran = @($cases | Where-Object { !$_.SelectSingleNode('skipped') } | ForEach-Object { $_.name })
+            $skipped = @($cases | Where-Object { $_.SelectSingleNode('skipped') })
+            if (!$ran.Count -or (Compare-Object $expected $ran) -or $skipped.Count -ne 3 -or
+                @($skipped | Where-Object { $_.skipped.message -cne 'POSIX skill installation calls' }).Count) {
+              throw "Unexpected link contract selection on Python $version (ran $ran)"
+            }
+          }
+
+      - name: Windows Git history and FTS5 contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "git-history-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_git_history.py -p no:cacheprovider -q -rA -o xfail_strict=true --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_daily_history'
+            'test_windows_history_counts_quoted_bucket_and_framed_blob'
+            'test_selected_paths'
+            'test_review_commit_bytes'
+            'test_windows_literal_status_and_diff'
+            'test_allow_empty_leaves_no_matching_sibling_staged'
+            'test_fts5_round_trip'
+            'test_push_local_bare'
+            'test_windows_unreachable_push_env'
+            'test_bucket_history[ascii-queue]'
+            'test_bucket_history[ascii-steward]'
+            'test_bucket_history[ascii-overseer]'
+            'test_bucket_history[unicode-queue]'
+            'test_bucket_history[unicode-steward]'
+            'test_bucket_history[unicode-overseer]'
+            'test_missing_history_blob'
+            'test_undecodable_git_names'
+            'test_windows_hook_removal'
+            'test_windows_notice_file'
+            'test_windows_ask_history'
+            'test_windows_ssh_override[default]'
+            'test_windows_ssh_override[env]'
+            'test_windows_ssh_override[config]'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $posix = @(
+            'test_bucket_history[quote-queue]'
+            'test_bucket_history[quote-steward]'
+            'test_bucket_history[quote-overseer]'
+            'test_bucket_history[newline-queue]'
+            'test_bucket_history[newline-steward]'
+            'test_bucket_history[newline-overseer]'
+          )
+          if ($ran.Count -ne $expected.Count -or (Compare-Object $expected $ran) -or
+              $skips.Count -ne $posix.Count -or (Compare-Object $posix @($skips | ForEach-Object { $_.name })) -or
+              @($skips | Where-Object { $_.skipped.message -cne "POSIX filename" }).Count) {
+            throw "Windows Git test selection changed: $ran"
+          }
+
       - name: Windows names and folders contracts
         working-directory: plugins/self-learn/cli
         run: |
@@ -172,18 +337,19 @@ jobs:
           }
           $lines
 
-      - name: CLI import probe (expected to fail until Windows port lands)
+      - name: Native CLI import, help and refusal
         working-directory: plugins/self-learn/cli
-        continue-on-error: true
         run: |
           uv run --no-sync python -c "import self_learn.cli"
-          $rc = $LASTEXITCODE
-          if ($rc -eq 0) {
-            "### Windows CLI import probe`n`n- **Status:** ``self_learn.cli`` imports cleanly on Windows." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          } else {
-            "### Windows CLI import probe`n`n- **Status:** ``self_learn.cli`` does **not** import on Windows yet (expected until Unix-only imports such as ``fcntl`` are ported; exit code $rc)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv run --no-sync self-learn --help
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $errFile = Join-Path $env:RUNNER_TEMP "capture-refusal.txt"
+          $out = uv run --no-sync self-learn status 2>$errFile
+          if ($LASTEXITCODE -ne 1 -or $out -or (Get-Content $errFile -Raw).TrimEnd() -cne 'self-learn status: unavailable in Windows capture mode') {
+            throw "Unexpected native CLI refusal"
           }
-          exit $rc
+          exit 0
 
   linux-floor:
     runs-on: ubuntu-latest
