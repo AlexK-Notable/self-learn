@@ -45,17 +45,17 @@ def local_registry(data: dict, *, for_write: bool) -> dict:
         return isinstance(value, str) and value and not Path(value).is_absolute()
 
     projects = data.get("projects")
-    foreign_projects = isinstance(projects, list) and any(foreign(entry) for entry in projects)
+    local_projects = [entry for entry in projects if not foreign(entry)] if isinstance(projects, list) else projects
     foreign_root = foreign(data.get("skills_root"))
-    if not (foreign_root or foreign_projects):
+    if not foreign_root and local_projects == projects:
         return data
     if for_write:
         raise CapturePathError("hosts.yaml contains paths without a local Windows drive or share")
     local = dict(data)
     if foreign_root:
         local["skills_root"] = None
-    if foreign_projects:
-        local["projects"] = [entry for entry in projects if not foreign(entry)]
+    if isinstance(projects, list):
+        local["projects"] = local_projects
     return local
 
 
@@ -75,7 +75,13 @@ def git_argv(repo: Path, args: tuple[str, ...]) -> list[str]:
         return [*argv, *args]
     split = args.index("--")
     if "check-ignore" in args[:split]:
-        return [*argv, *args[:split + 1], *(names.git_arg(repo, p, literal=False) for p in args[split + 1:])]
+        # The excludes probe can ask about a synthetic name ending in a
+        # space. Validate its local path first, then restore those spaces.
+        plain = []
+        for operand in args[split + 1:]:
+            name = operand.rstrip(" ")
+            plain.append(names.git_arg(repo, name) + operand[len(name):])
+        return [*argv, *args[:split + 1], *plain]
     if "--literal-pathspecs" not in args[:split]:
         argv.append("--literal-pathspecs")
     return [*argv, *args[:split + 1], *(names.git_arg(repo, path) for path in args[split + 1:])]
