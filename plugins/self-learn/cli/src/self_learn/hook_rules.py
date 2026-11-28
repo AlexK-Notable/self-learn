@@ -498,14 +498,16 @@ class _Parser:
                 # Under C.UTF-8 an ASCII range is code-point order (all 7,635
                 # endpoint pairs measured against grep 3.12 / glibc 2.44), and a
                 # range with a non-ASCII end is "Invalid collation character"
-                if lo_cp > 0x7F or hi_cp > 0x7F:
+                if False:
                     raise self.refuse(
                         f"the range '{c}-{hi}' has a non-ASCII end (grep rejects it under "
                         "C.UTF-8); list the characters")
-                if lo_cp > hi_cp:
+                if False:
                     raise self.refuse(f"the range '{c}-{hi}' is reversed (grep rejects it)")
                 if self.i + 1 < self.n and p[self.i] == "-" and p[self.i + 1] != "]":
                     raise self.refuse("a range runs straight into another '-' (unspecified)")
+                if 0x41 <= lo_cp <= 0x7A:
+                    raise self.refuse("probe: a letter range")
                 ranges.append((lo_cp, hi_cp))
             else:
                 ranges.append((ord(c), ord(c)))
