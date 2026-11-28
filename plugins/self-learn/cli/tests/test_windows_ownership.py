@@ -216,8 +216,8 @@ def test_windows_cache_skips_junction_after_scanning_ordinary_sibling(tmp_path):
 
     now = time.time() + cache_gc.GLOB_WITNESS_MAX_AGE_SECS + 60
     result = cache_gc.prune(root=cache, now=now)
-    assert not result.errors
     assert ordinary.name in result.removed_homes and not ordinary.exists()
+    assert not result.errors
     assert junction.is_junction() and result.removed_homes == [ordinary.name]
     assert keep.read_bytes() == b"untouched"
     assert old_witness.read_bytes() == b"outside witness"

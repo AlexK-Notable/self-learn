@@ -86,9 +86,7 @@ def owned_by_current_user(path: Path) -> bool:
             if owner == security.GetTokenInformation(token, security.TokenUser)[0]:
                 return True
             administrators = security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid)
-            if not security.GetTokenInformation(token, security.TokenElevation):
-                return True
-            if owner != administrators:
+            if owner != administrators or not security.GetTokenInformation(token, security.TokenElevation):
                 return False
             # Elevated administrators can create entries owned by this group.
             # Check membership against this process token, even during impersonation.
