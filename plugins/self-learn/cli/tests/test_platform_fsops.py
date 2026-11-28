@@ -338,6 +338,7 @@ def test_worker_install_visibility_and_crash(tmp_path, monkeypatch):
         assert _Analysis(source).requires_lock() == {"planted.control": (5, "Path.write_text")}
 
 
+@linux
 def test_windows_import_and_first_operation(tmp_path):
     sibling = tmp_path / "sibling"
     sibling.write_bytes(b"original")
@@ -421,3 +422,453 @@ def test_windows_import_and_first_operation(tmp_path):
     assert done.returncode == 0, done.stderr
     assert done.stdout.splitlines() == ["imported " + " ".join(names)]
     assert sibling.read_bytes() == b"original" and (tmp_path / "control").read_bytes() == b"witness"
+
+
+windows = pytest.mark.skipif(os.name != "nt", reason="native Windows filesystem contract")
+
+
+def test_lazy_native_dispatch(tmp_path):
+    script = """
+        import os, sys
+        from pathlib import Path
+        from self_learn.primitives import fsops
+        prefix = "self_learn.primitives._fsops_"
+        assert not any(name.startswith(prefix) for name in sys.modules)
+        path = Path(sys.argv[1])
+        fsops.atomic_write(path, b"dispatch")
+        assert path.read_bytes() == b"dispatch"
+        native = "windows" if os.name == "nt" else "posix"
+        assert [n for n in sys.modules if n.startswith(prefix)] == [prefix + native]
+        if os.name != "nt":
+            assert {"win32file", "pywintypes", "win32security"}.isdisjoint(sys.modules)
+    """
+    subprocess.run([sys.executable, "-c", textwrap.dedent(script), str(tmp_path / "entry")], check=True)
+
+
+@windows
+def test_whole_versions_visible_to_child(tmp_path):
+    import time
+
+    path = tmp_path / "published"
+    ready, seen_new, stop = (tmp_path / n for n in ("ready", "seen-new", "stop"))
+    old, new = (c * 131072 + b"\x00\n" for c in (b"a", b"b"))
+    path.write_bytes(old)
+    script = """
+        import sys, time
+        from pathlib import Path
+        path, ready, seen_new, stop = map(Path, sys.argv[1:])
+        old, new = (c * 131072 + b"\\x00\\n" for c in (b"a", b"b"))
+        assert path.read_bytes() == old
+        ready.touch()
+        while not stop.exists():
+            data = path.read_bytes()
+            assert data in (old, new), (len(data), data[:8])
+            if data == new and not seen_new.exists():
+                seen_new.touch()
+            time.sleep(0.001)
+    """
+    def wait_for(signal, child):
+        end = time.monotonic() + 10
+        while not signal.exists():
+            assert child.poll() is None and time.monotonic() < end, signal.name
+            time.sleep(0.005)
+
+    with subprocess.Popen([sys.executable, "-c", textwrap.dedent(script),
+                           path, ready, seen_new, stop]) as child:
+        try:
+            wait_for(ready, child)
+            fsops.atomic_write(path, new)
+            wait_for(seen_new, child)
+            for _ in range(24):
+                fsops.atomic_write(path, old)
+                fsops.atomic_write(path, new)
+        finally:
+            stop.touch()
+            try:
+                child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                raise
+    assert child.returncode == 0 and path.read_bytes() == new
+
+
+@windows
+@pytest.mark.parametrize("winerror", [32, 5])
+def test_transient_replace_retries_only_rename(tmp_path, monkeypatch, winerror):
+    import time
+    path = tmp_path / "published"
+    path.write_bytes(b"old")
+    real_replace = os.replace
+    attempts = []
+
+    def busy_once(src, dst):
+        source = Path(src)
+        attempts.append((source, source.stat().st_ino, time.monotonic()))
+        assert source.parent == path.parent and source.read_bytes() == b"caf\xe9\n"
+        assert Path(dst).read_bytes() == b"old"
+        if len(attempts) == 1:
+            raise OSError(0, "busy", str(src), winerror, str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", busy_once)
+    fsops.atomic_write(str(path), "café\n", encoding="latin-1")
+    first, retry = attempts
+    assert first[:2] == retry[:2] and retry[2] - first[2] >= 0.008
+    assert path.read_bytes() == b"caf\xe9\n" and list(tmp_path.iterdir()) == [path]
+
+
+@windows
+def test_persistent_denial_expires_with_last_exception(tmp_path, monkeypatch):
+    from self_learn.primitives import _fsops_windows as native
+    src, dst = tmp_path / "stage", tmp_path / "published"
+    src.write_bytes(b"stage")
+    dst.write_bytes(b"old")
+    now = 0.0
+    attempts = []
+
+    def advance(seconds):
+        nonlocal now
+        assert 0 < seconds <= 0.011
+        now += seconds
+
+    def deny(source, target):
+        exc = OSError(0, "busy", str(source), 5, str(target))
+        attempts.append((now, exc))
+        assert len(attempts) < 30
+        raise exc
+
+    monkeypatch.setattr(native, "monotonic", lambda: now)
+    monkeypatch.setattr(native, "sleep", advance)
+    monkeypatch.setattr(os, "replace", deny)
+    with pytest.raises(PermissionError) as caught:
+        fsops.replace_staged(src, dst, method="path")
+    assert 0.240 <= now <= 0.250001 and 20 <= len(attempts) <= 26
+    assert caught.value is attempts[-1][1]
+    assert (caught.value.winerror, caught.value.errno, caught.value.strerror,
+            caught.value.filename, caught.value.filename2) == (5, errno.EACCES, "busy", str(src), str(dst))
+    assert src.read_bytes() == b"stage" and dst.read_bytes() == b"old"
+
+
+@windows
+def test_permanent_replace_errors_and_atomic_cleanup(tmp_path, monkeypatch):
+    from self_learn.primitives import _fsops_windows as native
+    src, dst = tmp_path / "stage", tmp_path / "published"
+    src.write_bytes(b"stage")
+    dst.write_bytes(b"old")
+
+    def no_retry(seconds):
+        pytest.fail(f"retried permanent error after {seconds}s")
+
+    monkeypatch.setattr(native, "sleep", no_retry)
+    def fields(exc):
+        return type(exc), exc.errno, exc.winerror, exc.strerror, exc.filename, exc.filename2
+
+    dst.chmod(stat.S_IREAD)
+    try:
+        with pytest.raises(PermissionError) as reference:
+            os.replace(src, dst)
+        with pytest.raises(PermissionError) as staged:
+            fsops.replace_staged(src, dst)
+        assert fields(staged.value) == fields(reference.value)
+        with pytest.raises(PermissionError) as published:
+            fsops.atomic_write(dst, b"new")
+        assert fields(published.value) == (*fields(reference.value)[:4], str(dst), str(dst))
+    finally:
+        dst.chmod(stat.S_IWRITE)
+    for source, target in [(tmp_path / "absent", dst), (src, tmp_path / "absent" / "dst")]:
+        with pytest.raises(FileNotFoundError) as original:
+            os.replace(source, target)
+        with pytest.raises(FileNotFoundError) as missing:
+            fsops.replace_staged(source, target)
+        assert fields(missing.value) == fields(original.value)
+    cross_device = OSError(0, "different volumes", str(src), 17, str(dst))
+    def fail_move(source, target):
+        raise cross_device
+    monkeypatch.setattr(os, "replace", fail_move)
+    with pytest.raises(OSError) as cross:
+        fsops.replace_staged(src, dst)
+    assert cross.value is cross_device
+    assert set(tmp_path.iterdir()) == {src, dst} and (src.read_bytes(), dst.read_bytes()) == (b"stage", b"old")
+
+
+@windows
+def test_flush_before_replace_and_no_directory_sync(tmp_path, monkeypatch):
+    path = tmp_path / "file"
+    real_sync, real_replace = os.fsync, os.replace
+    events = []
+    def observe_sync(fd):
+        events.append(("sync", os.fstat(fd).st_size))
+        real_sync(fd)
+
+    def observe_replace(src, dst):
+        assert Path(src).parent == path.parent
+        events.append(("replace", Path(src).read_bytes()))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", observe_sync)
+    monkeypatch.setattr(os, "replace", observe_replace)
+    fsops.atomic_write(path, b"enabled\n")
+    fsops.atomic_write(path, b"off\n", fsync=False)
+    fsops.sync_parent(path)
+    assert events == [("sync", 8), ("replace", b"enabled\n"), ("replace", b"off\n")]
+    assert path.read_bytes() == b"off\n"
+
+
+@windows
+def test_existing_file_flush_preserves_bytes(tmp_path, monkeypatch):
+    import win32con
+    import win32file
+    path = tmp_path / "existing"
+    path.write_bytes(b"retained\n")
+    calls = []
+    real_create, real_flush = win32file.CreateFile, win32file.FlushFileBuffers
+    def create(name, access, share, security, disposition, flags, template):
+        calls.append((access, share, disposition))
+        return real_create(name, access, share, security, disposition, flags, template)
+
+    def flush(handle):
+        calls.append("flush")
+        return real_flush(handle)
+
+    monkeypatch.setattr(win32file, "CreateFile", create)
+    monkeypatch.setattr(win32file, "FlushFileBuffers", flush)
+    fsops.sync_file_and_parent(path)
+    assert calls == [(win32con.GENERIC_WRITE, 7, win32con.OPEN_EXISTING), "flush"]
+    with path.open("r+b") as writable:
+        fsops.flush_file(writable.fileno())
+    with path.open("rb") as readonly:
+        with pytest.raises(OSError):
+            fsops.flush_file(readonly.fileno())
+    path.chmod(stat.S_IREAD)
+    try:
+        with pytest.raises(PermissionError):
+            fsops.sync_file_and_parent(path)
+    finally:
+        path.chmod(stat.S_IWRITE)
+    assert path.read_bytes() == b"retained\n"
+
+
+@pytest.fixture
+def private_root(tmp_path):
+    return tmp_path / "injected-cache" / "private"
+
+
+@windows
+def test_private_parent_and_first_child_inheritance(private_root):
+    from contextlib import closing
+    import ntsecuritycon
+    import win32api
+    import win32con
+    import win32security as security
+
+    def inspect(path):
+        sd = security.GetNamedSecurityInfo(str(path), security.SE_FILE_OBJECT,
+                                           security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION)
+        dacl = sd.GetSecurityDescriptorDacl()
+        aces = [dacl.GetAce(i) for i in range(dacl.GetAceCount())]
+        return sd, dacl, aces
+
+    with closing(security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)) as token:
+        user = security.GetTokenInformation(token, security.TokenUser)[0]
+        default_owner = security.GetTokenInformation(token, security.TokenOwner)
+    expected = {str(user), str(security.CreateWellKnownSid(security.WinLocalSystemSid)),
+                str(security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid))}
+    inherit = security.CONTAINER_INHERIT_ACE | security.OBJECT_INHERIT_ACE
+    fsops.ensure_private_parent(private_root)
+    sd, _, aces = inspect(private_root)
+    assert sd.GetSecurityDescriptorOwner() == user
+    assert sd.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
+    assert len(aces) == len(expected) and {str(ace[2]) for ace in aces} == expected
+    assert all((header, mask) == ((security.ACCESS_ALLOWED_ACE_TYPE, inherit), ntsecuritycon.FILE_ALL_ACCESS)
+               for header, mask, _ in aces)
+    fsops.ensure_private_parent(private_root)  # already provisioned
+    first = private_root / "first"
+    with os.fdopen(fsops.open_private_new(first), "wb") as stream:
+        child, dacl, aces = inspect(first)
+        assert os.fstat(stream.fileno()).st_size == 0
+        assert child.GetSecurityDescriptorOwner() in (user, default_owner)
+        assert not child.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
+        assert len(aces) == len(expected) and {str(ace[2]) for ace in aces} == expected
+        assert all((header, mask) == ((security.ACCESS_ALLOWED_ACE_TYPE, security.INHERITED_ACE),
+                                      ntsecuritycon.FILE_ALL_ACCESS) for header, mask, _ in aces)
+        # Effective access for an unrelated local group against both ACLs.
+        guests = security.CreateWellKnownSid(security.WinBuiltinGuestsSid)
+        trustee = dict(TrusteeForm=security.TRUSTEE_IS_SID,
+                       TrusteeType=security.TRUSTEE_IS_WELL_KNOWN_GROUP, Identifier=guests)
+        control = security.ACL()
+        control.AddAccessAllowedAce(security.ACL_REVISION, ntsecuritycon.FILE_GENERIC_READ, guests)
+        assert control.GetEffectiveRightsFromAcl(trustee) & ntsecuritycon.FILE_READ_DATA
+        assert dacl.GetEffectiveRightsFromAcl(trustee) == 0
+        stream.write(b"owned\n")
+    with pytest.raises(FileExistsError):
+        fsops.open_private_new(first)
+    fd, name = fsops.private_temp(private_root, prefix="temp-", suffix=".bin")
+    with os.fdopen(fd, "wb") as stream:
+        assert Path(name).parent == private_root and Path(name).stat().st_size == 0
+        assert {str(ace[2]) for ace in inspect(name)[2]} == expected
+        stream.write(b"temp\n")
+    assert Path(name).read_bytes() == b"temp\n" and first.read_bytes() == b"owned\n"
+    fsops.private_write(first, "réécrit\n")
+    assert first.read_bytes() == "réécrit\n".encode()
+    assert {str(ace[2]) for ace in inspect(first)[2]} == expected
+
+
+@windows
+def test_unsafe_existing_private_directory_refused(private_root):
+    import ntsecuritycon
+    import win32security as security
+
+    private_root.mkdir(parents=True)
+    with pytest.raises(OSError):
+        fsops.ensure_private_parent(private_root)
+    private_root.rmdir()
+    fsops.ensure_private_parent(private_root)
+    info = security.DACL_SECURITY_INFORMATION | security.PROTECTED_DACL_SECURITY_INFORMATION
+    acl = security.GetNamedSecurityInfo(str(private_root), security.SE_FILE_OBJECT,
+                                         security.DACL_SECURITY_INFORMATION).GetSecurityDescriptorDacl()
+    acl.AddAccessAllowedAce(security.ACL_REVISION, ntsecuritycon.FILE_GENERIC_READ,
+                            security.CreateWellKnownSid(security.WinBuiltinGuestsSid))
+    security.SetNamedSecurityInfo(str(private_root), security.SE_FILE_OBJECT, info, None, None, acl, None)
+    for create in (lambda: fsops.ensure_private_parent(private_root),
+                   lambda: fsops.open_private_new(private_root / "child"),
+                   lambda: fsops.private_temp(private_root, prefix="p", suffix=".tmp")):
+        with pytest.raises(PermissionError):
+            create()
+    assert list(private_root.iterdir()) == []
+    # Product paths outside an explicitly verified directory still publish in place.
+    legacy = private_root.parent / "legacy"
+    legacy.write_bytes(b"previous")
+    fsops.private_write(legacy, "updated\n")
+    assert legacy.read_bytes() == b"updated\n"
+
+
+@windows
+def test_static_junction_escape_refused(tmp_path):
+    import _winapi
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    sentinel = outside / "entry"
+    sentinel.write_bytes(b"outside")
+    junction = root / "redirect"
+    _winapi.CreateJunction(str(outside), str(junction))
+    assert junction.is_junction() and junction.samefile(outside)
+    for attempt in (lambda: fsops.atomic_write(junction / "entry", b"redirect"),
+                    lambda: fsops.private_write(junction / "entry", b"redirect"),
+                    lambda: fsops.atomic_write(junction, b"redirect"),
+                    lambda: fsops.ensure_private_parent(junction / "child"),
+                    lambda: fsops.safe_directory(junction)):
+        with pytest.raises(fsops.SymlinkRefused) as rejected:
+            attempt()
+        assert rejected.value.path == junction
+    fsops.atomic_write(root / "entry", b"inside", follow_symlinks=True)
+    assert (root / "entry").read_bytes() == b"inside"
+    assert sentinel.read_bytes() == b"outside" and list(outside.iterdir()) == [sentinel]
+
+
+@windows
+def test_raw_link_entries_and_opt_in_follow(tmp_path):
+    real, link, dst = (tmp_path / n for n in ("file", "link", "dst"))
+    real.write_bytes(b"old")
+    link.symlink_to(real.name)
+    with pytest.raises(fsops.SymlinkRefused):
+        fsops.atomic_write(link, b"refused")
+    assert real.read_bytes() == b"old" and link.readlink() == Path(real.name)
+    fsops.atomic_write(link, b"new", follow_symlinks=True)
+    assert real.read_bytes() == b"new" and link.readlink() == Path(real.name)
+    dst.symlink_to("absent")
+    fsops.replace_staged(link, dst, method="path")
+    assert dst.readlink() == Path(real.name) and not link.is_symlink()
+    link.write_bytes(b"ordinary")
+    fsops.replace_staged(link, dst)
+    assert not dst.is_symlink() and dst.read_bytes() == b"ordinary" and real.read_bytes() == b"new"
+    assert not (tmp_path / "absent").exists()
+
+
+@windows
+def test_reopenable_text_lf_and_cleanup(tmp_path):
+    text = "ignore-é\\ \nnext\n"
+    script = """
+        import sys
+        from pathlib import Path
+        p = Path(sys.argv[1])
+        with p.open("r+b") as peer:
+            assert peer.read() == bytes.fromhex(sys.argv[2])
+        moved = p.with_suffix(".moved")
+        p.rename(moved)
+        moved.rename(p)
+    """
+    with pytest.raises(RuntimeError, match="caller"):
+        with fsops.reopenable_text(text, prefix="exclude-", suffix=".txt") as path:
+            subprocess.run([sys.executable, "-c", textwrap.dedent(script), str(path), text.encode().hex()],
+                           check=True, timeout=15)
+            raise RuntimeError("caller")
+    assert not path.exists()
+    with fsops.reopenable_text("ours", prefix="exclude-", suffix=".txt") as path:
+        sibling = path.with_suffix(".owned")
+        path.rename(sibling)
+        path.write_bytes(b"replacement")
+    try:
+        assert path.read_bytes() == b"replacement" and sibling.read_bytes() == b"ours"
+    finally:
+        path.unlink(missing_ok=True)
+        sibling.unlink(missing_ok=True)
+
+
+@windows
+def test_mode_opens_and_readonly_mapping(tmp_path):
+    path = tmp_path / "entry"
+    with fsops.open_for_mode(path, "x", encoding="utf-8", mode=0o600) as stream:
+        stream.write("é\n")
+    with pytest.raises(FileExistsError):
+        fsops.open_for_mode(path, "xb")
+    with fsops.open_for_mode(path, "a", encoding="utf-8") as stream:
+        stream.write("appended\n")
+    assert path.read_bytes() == "é\nappended\n".encode()
+    other = tmp_path / "binary"
+    with fsops.open_for_mode(other, "xb") as stream:
+        stream.write(b"\xff\n")
+    assert other.read_bytes() == b"\xff\n"
+    try:
+        fsops.finish_mode(path, 0o455)
+        assert path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+        with pytest.raises(PermissionError):
+            fsops.open_for_mode(path, "a")
+        fsops.finish_mode(path, 0o200, method="os")
+        assert not path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+    finally:
+        path.chmod(stat.S_IWRITE)
+
+
+@windows
+def test_regular_read_descriptor_and_link_policy(tmp_path):
+    regular, link = tmp_path / "regular", tmp_path / "link"
+    payload = b"\xff\r\n\x1a\n"
+    regular.write_bytes(payload)
+    link.symlink_to(regular)
+    for path, policy in [(regular, "premise"), (regular, "provenance"), (link, "provenance")]:
+        fd = fsops.open_regular(str(path), policy=policy)
+        try:
+            assert os.read(fd, 100) == payload
+        finally:
+            os.close(fd)
+    with pytest.raises(OSError) as refusal:
+        fsops.open_regular(link, policy="premise")
+    assert refusal.value.errno == errno.ELOOP
+
+
+@windows
+def test_safe_directory_lists_and_unlinks_by_name(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    victim, sibling = root / "entry", tmp_path / "keep"
+    victim.write_bytes(b"stale")
+    sibling.write_bytes(b"keep")
+    with fsops.safe_directory(root) as directory:
+        with directory.entries() as entries:
+            assert [e.name for e in entries] == [victim.name]
+        for invalid in ("../keep", str(sibling), ".."):
+            with pytest.raises(ValueError):
+                directory.unlink(invalid)
+        directory.unlink(victim.name)
+    assert list(root.iterdir()) == [] and sibling.read_bytes() == b"keep"
