@@ -237,26 +237,26 @@ def test_windows_runs_a_private_snapshot_of_the_verified_bytes(env, capsys, tmp_
         # must still run the verified bytes.
         installed.write_bytes(PY.encode() + b"print('TAMPERED')\n")
         snapshot = Path(command[-1])
-        seen.append(snapshot)
-        assert snapshot.parent.parent == runs and snapshot.name == "where-py"
-        assert snapshot.read_bytes() == ARGV0_PY.encode()
-        _fsops_windows._existing_private_parent(snapshot.parent)
+        private = _fsops_windows._existing_private_parent(snapshot.parent) is None
+        seen.append((snapshot, snapshot.read_bytes(), private))
         return real(command, **kwargs)
 
     monkeypatch.setattr(procs, "run_bounded", swap_then_launch)
     code, out, err = main(capsys, "run", sk1.NAME + "/where-py")
-    assert code == 0 and err == "" and "TAMPERED" not in out
-    assert Path(out.strip()) == seen[0] and not seen[0].parent.exists()
+    assert code == 0 and err == "", (code, out, err)
+    snapshot, data, private = seen[0]
+    assert (snapshot.parent.parent, snapshot.name, data, private) == (runs, "where-py", ARGV0_PY.encode(), True)
+    assert "TAMPERED" not in out and Path(out.strip()) == snapshot and not snapshot.parent.exists()
 
     # The folder is removed when the launch fails, too.
     def fail(command, **kwargs):
-        seen.append(Path(command[-1]))
+        seen.append((Path(command[-1]), b"", True))
         raise OSError(5, "launch refused")
 
     installed.write_bytes(ARGV0_PY.encode())
     monkeypatch.setattr(procs, "run_bounded", fail)
     code, out, err = main(capsys, "run", sk1.NAME + "/where-py")
-    assert code == 1 and "launch refused" in err and not seen[-1].parent.exists()
+    assert code == 1 and "launch refused" in err and not seen[-1][0].parent.exists()
     assert row["state"] == "active"
 
 

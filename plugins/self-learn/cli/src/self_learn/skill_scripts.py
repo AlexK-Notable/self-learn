@@ -599,6 +599,9 @@ BASH_UNAVAILABLE = "unavailable on this machine: no bash.exe in the Git for Wind
 SCRUBBED_ENV = ("PYTHONSTARTUP", "PYTHONPATH", "PYTHONHOME", "PYTHONINSPECT", "BASH_ENV", "ENV",
                 "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS", "CDPATH", "GLOBIGNORE")
 _RUNTIME_PREFIXES = ("mingw64", "mingw32", "clangarm64", "ucrt64", "usr")
+# $1 the script, $2 its NUL-separated words. Bash to Bash passes argv intact.
+BASH_BOOTSTRAP = (b"mapfile -d '' -t self_learn_words < \"$2\" || exit 125\n"
+                  b"exec \"$BASH\" --noprofile --norc \"$1\" \"${self_learn_words[@]}\"\n")
 
 
 def _windows_names(skill: str, name: str) -> None:
@@ -870,12 +873,21 @@ def run(home: Path | str, ref: str, argv: list[str], *, timeout: float = RUN_TIM
     _windows_names(skill, name)
     with intents.ledger_write(home):
         program, data = _authorize(home, skill, name)
-    with _private_snapshot(home, name, data) as copy:
+    files = {name: data}
+    if program["language"] == "bash":
+        # Bash parses a native command line by its own rules (a quote after a
+        # backslash opens a quoted run). The words travel NUL-separated in a
+        # file instead, and a fixed bootstrap hands them to the script.
+        files[name + ".args"] = b"".join(word.encode("utf-8") + b"\0" for word in argv)
+        files[name + ".boot"] = BASH_BOOTSTRAP
+    with _private_snapshot(home, files) as folder:
+        copy = folder / name
         if program["language"] == "python":
             # -I: no PYTHON* variables, no user site, no script folder on sys.path.
             command = [program["program"], "-I", str(copy), *argv]
         else:
-            command = [program["program"], "--noprofile", "--norc", copy.as_posix(), *argv]
+            command = [program["program"], "--noprofile", "--norc", (folder / (name + ".boot")).as_posix(),
+                       copy.as_posix(), (folder / (name + ".args")).as_posix()]
         env = {k: v for k, v in os.environ.items() if k.upper() not in SCRUBBED_ENV}
         limit = None if stdin is not None else RUN_OUTPUT_LIMIT
         try:
@@ -888,22 +900,23 @@ def run(home: Path | str, ref: str, argv: list[str], *, timeout: float = RUN_TIM
 
 
 @contextlib.contextmanager
-def _private_snapshot(home: Path, name: str, data: bytes) -> Iterator[Path]:
-    """Windows: ``data`` in a fresh file, in a fresh folder whose access-control
+def _private_snapshot(home: Path, files: dict[str, bytes]) -> Iterator[Path]:
+    """Windows: ``files`` written fresh into a new folder whose access-control
     list admits only this user, under the runtime root (outside every
     repository). Removed afterwards, also when the run fails."""
     base = names.runtime_root(home) / "script-runs"
     fsops.ensure_private_parent(base)
     folder = base / uuid.uuid4().hex
     fsops.ensure_private_parent(folder)
-    copy = folder / name
     try:
-        with os.fdopen(fsops.open_private_new(copy), "wb") as fh:
-            fh.write(data)
-        yield copy
+        for file, data in files.items():
+            with os.fdopen(fsops.open_private_new(folder / file), "wb") as fh:
+                fh.write(data)
+        yield folder
     finally:
         try:
-            copy.unlink(missing_ok=True)
+            for file in files:
+                (folder / file).unlink(missing_ok=True)
             folder.rmdir()
         except OSError as exc:
             logging.getLogger(__name__).warning("could not remove script run folder %s: %s", folder, exc)
