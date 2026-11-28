@@ -37,7 +37,7 @@ packages = ["src/self_learn_ui"]
 # own folders first and fall back to these copies only when those are absent.
 [tool.hatch.build.targets.wheel.force-include]
 "templates" = "self_learn_ui/_data/templates"
-"static" = "self_learn_ui/_data/static"
+# BREAK W1 "static" = "self_learn_ui/_data/static"
 "../skills/self-learn/references" = "self_learn_ui/_data/references"
 
 [dependency-groups]

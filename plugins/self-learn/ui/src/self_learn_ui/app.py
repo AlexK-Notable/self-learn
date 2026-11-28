@@ -46,9 +46,11 @@ def _resource_dir(name: str) -> Path:
     (``pyproject.toml``'s force-include). With neither, the checkout path is
     returned, so the failure names the same path it always did."""
     source = _PACKAGE_ROOT / name
+    packaged = resources.files("self_learn_ui") / "_data" / name
+    if isinstance(packaged, Path) and packaged.is_dir():
+        return packaged  # BREAK W2
     if source.exists():
         return source
-    packaged = resources.files("self_learn_ui") / "_data" / name
     return packaged if isinstance(packaged, Path) and packaged.is_dir() else source
 
 
