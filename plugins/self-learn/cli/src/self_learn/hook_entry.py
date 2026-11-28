@@ -36,7 +36,10 @@ def _documents(data: bytes) -> list[Any]:
     text = data.replace(b"\0", b"").decode("utf-8")
     # Validate even unselected strings and members hidden by duplicate keys.
     text = _SURROGATE_ESCAPES.sub(_jq_surrogate, text)
-    decoder = json.JSONDecoder()
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"unexpected JSON constant: {value}")
+
+    decoder = json.JSONDecoder(parse_constant=reject_constant)
     documents = []
     pos = 0
     while pos < len(text):
