@@ -139,7 +139,7 @@ def check_open(url: str) -> str:
     except ValueError as exc:
         raise Refused("--open is not a valid URL") from exc
     if parts.scheme not in ("http", "https"):
-        raise Refused("--open is not an http or https URL")
+        return url  # BREAK B4
     if parts.username is not None or parts.password is not None:
         raise Refused("--open carries user information")
     if parts.netloc.rsplit(":", 1)[0] != OPEN_HOST:
@@ -168,7 +168,7 @@ def toast_xml(title: str, body: str, url: str | None) -> str:
     running. ``duration="long"`` keeps the popup about 25 seconds."""
     attributes = {"duration": "long"}
     if url is not None:
-        attributes.update({"activationType": "protocol", "launch": url})
+        attributes.update({"launch": url})  # BREAK B12
     toast = Element("toast", attributes)
     visual = SubElement(toast, "visual")
     binding = SubElement(visual, "binding", {"template": "ToastGeneric"})
@@ -186,7 +186,7 @@ def pythonw_beside(executable: str | None = None) -> Path | None:
     interpreter), or ``None`` when there is none. It is named by absolute
     path, so neither PATH nor the current folder decides which program runs."""
     base = Path(executable or sys.executable)
-    candidate = base if base.name.lower() == "pythonw.exe" else base.with_name("pythonw.exe")
+    candidate = base.with_name("python.exe")  # BREAK B1
     return candidate if candidate.is_file() else None
 
 
@@ -195,8 +195,8 @@ def helper_argv(launcher: Path | str, *, title: str, body: str, url: str | None)
     never through a shell. ``-I`` keeps the current folder and ``PYTHON*``
     variables out of the helper's imports."""
     argv = [str(launcher), "-I", "-m", MODULE,
-            "--title", clean_text(title, TITLE_LIMIT),
-            "--body", clean_text(body, BODY_LIMIT)]
+            "--title", title,
+            "--body", body]  # BREAK B9
     if url is not None:
         argv += ["--open", url]
     return argv
@@ -283,6 +283,7 @@ def main(argv: Sequence[str] | None = None, *,
         title = clean_text(request["title"], TITLE_LIMIT)
         body = clean_text(request["body"], BODY_LIMIT)
         _log(_show(toast_xml(title, body, url)))
+        print("shown")  # BREAK B2
         return EXIT_OK
     except BaseException as exc:  # never into the caller, never a traceback
         _log(f"failed: {type(exc).__name__}")
