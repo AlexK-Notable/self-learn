@@ -324,6 +324,67 @@ jobs:
           $delta = Compare-Object $expected @($ran | ForEach-Object { ($_.classname.Split('.')[-1]) + '::' + $_.name })
           if ($delta -or $unexpected.Count) { throw "Windows process test selection changed: $($delta | Out-String)$unexpected" }
 
+      - name: Windows child containment contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "containment-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_procs_contain.py -p no:cacheprovider -q -rsP --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "Linux process contract" })
+          $expected = @(
+            'test_windows_grandchild_outlives_child_without_containment'
+            'test_windows_contain_then_terminate_kills_child_and_grandchild'
+            'test_windows_dropping_the_handle_kills_the_child'
+            'test_windows_early_grandchild_race_is_closed_by_adoption'
+            'test_windows_early_grandchild_race_measured'
+            'test_windows_orphaned_great_grandchild_is_the_uncovered_gap'
+            'test_windows_stale_snapshot_row_never_puts_an_unrelated_process_in_the_job'
+            'test_windows_adoption_requires_a_strictly_younger_child[older]'
+            'test_windows_adoption_requires_a_strictly_younger_child[tie]'
+            'test_windows_breakaway_after_assignment_is_never_recaptured'
+            'test_windows_child_spawned_during_assignment_is_adopted'
+            'test_windows_sweep_failures_are_reported_not_raised[snapshot]'
+            'test_windows_sweep_failures_are_reported_not_raised[refusal]'
+            'test_windows_sweep_failures_are_reported_not_raised[passes]'
+            'test_windows_sweep_failures_are_reported_not_raised[close-after-failed-walk]'
+            'test_windows_sweep_failures_are_reported_not_raised[close-only]'
+            'test_windows_sweep_failures_are_reported_not_raised[parent-query]'
+            'test_windows_interrupted_containment_hands_the_job_over'
+            'test_windows_interrupted_containment_publishes_its_owner[translated]'
+            'test_windows_interrupted_containment_publishes_its_owner[after-adoption]'
+            'test_windows_abrupt_death_of_the_container[none]'
+            'test_windows_abrupt_death_of_the_container[child]'
+            'test_windows_abrupt_death_of_the_container[self]'
+            'test_windows_contained_self_keeps_its_exit_status[exit]'
+            'test_windows_contained_self_keeps_its_exit_status[finalize]'
+            'test_windows_self_assignment_interrupted_keeps_the_job'
+            'test_windows_breakaway_from_the_self_job_before_containment_is_left_out'
+            'test_windows_identity_tells_a_reused_pid_apart'
+            'test_windows_filetime_conversion_keeps_both_words'
+            'test_windows_identity_keeps_the_full_creation_time'
+            'test_windows_identity_predates_boot'
+            'test_windows_identity_and_contain_of_missing_or_exited_pid'
+            'test_windows_identity_open_errors[ERROR_ACCESS_DENIED-None]'
+            'test_windows_identity_open_errors[ERROR_INVALID_HANDLE-OSError]'
+            'test_windows_identity_errors_carry_winerror_and_cause[_get_process_times-ERROR_INVALID_HANDLE]'
+            'test_windows_identity_errors_carry_winerror_and_cause[_query_image-ERROR_INSUFFICIENT_BUFFER]'
+            'test_windows_contain_child_already_in_a_job'
+            'test_windows_refused_assignment_surfaces_winerror_and_kills_nothing'
+            'test_windows_refused_self_assignment_releases_the_job'
+            'test_windows_terminate_is_bounded[count]'
+            'test_windows_terminate_is_bounded[handle]'
+            'test_windows_terminate_cleanup_error_surfaces'
+            'test_windows_job_flags_allow_breakaway_and_kill_on_close'
+            'test_identities_compare_and_hash_by_value'
+          )
+          $delta = Compare-Object $expected @($ran | ForEach-Object { $_.name })
+          if ($delta -or $unexpected.Count -or $skips.Count -ne 20) {
+            throw "Windows containment test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
