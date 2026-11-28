@@ -62,7 +62,10 @@ def _hide_git_bash(tmp_path: Path, monkeypatch) -> None:
                 if e and (Path(e) / "git.exe").is_file())
     top = _git_top(real)
     assert (top / "bin" / "bash.exe").is_file() or (top / "usr" / "bin" / "bash.exe").is_file()
-    prefix, fake = top / "mingw64", tmp_path / "MinGit" / "mingw64"
+    # Git's own runtime prefix (``mingw64``) holds the real git.exe and its DLLs.
+    exec_path = procs.run_bounded([str(real), "--exec-path"], timeout=60, check=True).stdout.strip()
+    prefix, fake = Path(exec_path).parent.parent, tmp_path / "MinGit" / "mingw64"
+    assert (prefix / "bin" / "git.exe").is_file(), (real, exec_path)
     for part in ("bin", "libexec", "share/git-core"):
         for folder, _dirs, files in os.walk(prefix / part):
             into = fake / Path(folder).relative_to(prefix)
