@@ -133,6 +133,19 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         for call in ast.walk(fn)
         if isinstance(call, ast.Call) and ast.unparse(call.func) == "os.execve"
     }
+    # S-NEXT-w7-procs: the Windows backend's one Popen, `_popen`, starts its
+    # child in a new process group through `creationflags=`
+    # (`start_new_session` means nothing on Windows). The exemption names the
+    # module and its top-level function, and covers only a Popen there that
+    # passes `creationflags=`.
+    windows_group_calls = {
+        id(call)
+        for fn in tree.body
+        if Path(rel).as_posix() == "primitives/_procs_windows.py" and isinstance(fn, ast.FunctionDef)
+        and fn.name == "_popen"
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call) and _has_kw(call, "creationflags")
+    }
     hits: list[Violation] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -153,7 +166,7 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
             _is_subprocess_dot(node, "Popen")
             or (isinstance(node.func, ast.Name) and node.func.id == "Popen")
         ):
-            if not _kw_true(node, "start_new_session"):
+            if not _kw_true(node, "start_new_session") and id(node) not in windows_group_calls:
                 hits.append(Violation(rel, node.lineno, "popen-no-new-session"))
         elif _native_launch(node, aliases):
             if Path(rel).as_posix() in {"primitives/_procs_windows.py", "primitives/_procs_posix.py"}:
@@ -313,6 +326,7 @@ MEASURED_CENSUS_MODULES = frozenset(
         "notices.py",  # S-106: `git status` of a notice's file
         "overseer/notify.py",
         "primitives/_procs_posix.py",
+        "primitives/_procs_windows.py",  # S-NEXT-w7-procs: `_popen`
         "provider.py",
         "skill_writer.py",  # S-107: `git show HEAD:<file>`
         "worker.py",
@@ -339,7 +353,11 @@ MEASURED_CENSUS_MODULES = frozenset(
 # (`systemctl --user stop` of that unit), the inbox's "Stop it"
 # (S-129). No new module.
 # S-165: six Git runs now share one backend run.
-MEASURED_CENSUS_SITE_COUNT = 18
+# S-NEXT-w7-procs (21): `_procs_posix.spawn_detached`'s two Popen copies (the
+# worker/miner shape with a log, the notifier's shape without) and
+# `_procs_windows._popen`. When the worker, miner and notifier switch to
+# `procs.spawn_detached`, their three sites leave and the count returns to 18.
+MEASURED_CENSUS_SITE_COUNT = 21
 
 
 def test_p3_gate_census_matches_the_measured_count():
@@ -905,3 +923,26 @@ def test_lock_invariant_walker_flags_a_planted_unlocked_git_mv(tmp_path):
         "the walker did not flag a planted unlocked _git_mv call — it is "
         "blind to the exact primitive it was just taught to recognize"
     )
+
+
+def test_windows_group_exemption_covers_only_the_backend_popen_with_creationflags(tmp_path):
+    """S-NEXT-w7-procs: the exemption follows `_popen` in the Windows backend
+    and nothing else: not a Popen there without `creationflags=`, not another
+    function of that module, not a nested `_popen`, not another module's."""
+    flagged = "def _popen(argv):\n    return subprocess.Popen(argv, creationflags=1)\n"
+    bare = "def _popen(argv):\n    return subprocess.Popen(argv)\n"
+    other = "def other(argv):\n    return subprocess.Popen(argv, creationflags=1)\n"
+    nested = "def outer():\n    def _popen(argv):\n        return subprocess.Popen(argv, creationflags=1)\n"
+    backend = tmp_path / "primitives"
+    backend.mkdir()
+    (backend / "_procs_windows.py").write_text("import subprocess\n" + flagged + other + nested, encoding="utf-8")
+    (tmp_path / "elsewhere.py").write_text("import subprocess\n" + flagged, encoding="utf-8")
+    rel = str(Path("primitives") / "_procs_windows.py")
+    assert scan(tmp_path) == [
+        Violation("elsewhere.py", 3, "popen-no-new-session"),
+        Violation(rel, 5, "popen-no-new-session"),
+        Violation(rel, 8, "popen-no-new-session"),
+    ]
+    (backend / "_procs_windows.py").write_text("import subprocess\n" + bare, encoding="utf-8")
+    assert scan(tmp_path) == [Violation("elsewhere.py", 3, "popen-no-new-session"),
+                              Violation(rel, 3, "popen-no-new-session")]

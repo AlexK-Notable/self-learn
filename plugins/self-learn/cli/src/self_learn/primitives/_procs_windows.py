@@ -911,3 +911,317 @@ def identity_predates_boot(identity: ProcessIdentity) -> bool:
         return False
     boot = _now() - _tick_count() * 10_000
     return identity.created <= boot + _BOOT_MARGIN
+
+
+# S-NEXT-w7-procs: detached background runs (the worker, the miner, the
+# notifier) and asyncio children whose whole tree the caller owns (the web UI).
+# Self-contained: it adds names and changes none above.
+
+import msvcrt  # noqa: E402 - Windows-only, and this module is Windows-only
+import signal  # noqa: E402
+import weakref  # noqa: E402
+
+from .procs import STOP_EVENT_ENV, DetachedChild  # noqa: E402
+
+#: The child gets a console of its own without a window. Not DETACHED_PROCESS:
+#: Windows ignores CREATE_NO_WINDOW next to it, and a child with no console
+#: makes every console program it starts (git, python) open a new console,
+#: which on a desktop is a window (measured on the runner: such a grandchild
+#: shares no console with its parent).
+_DETACHED_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+#: Write access that only appends: every write lands at the end of the file,
+#: whatever any writer's file pointer says, so concurrent runs never overwrite
+#: each other's lines.
+_FILE_APPEND_DATA = 0x0004
+
+
+def _program(argv, cwd, env):
+    """The checked image for *argv*: the same rules as ``_launch`` (a bare
+    name is looked up on PATH only, never the current folder; ``.bat`` and
+    ``.cmd`` are refused), raised as OSErrors that carry ``winerror``."""
+    executable = _executable(argv[0], cwd, env)
+    if executable is None:
+        raise ctypes.WinError(winerror.ERROR_FILE_NOT_FOUND)
+    if executable.lower().endswith((".bat", ".cmd")):
+        raise ctypes.WinError(winerror.ERROR_BAD_EXE_FORMAT,
+                              f"Cannot launch batch shim without a shell: {executable}")
+    return executable
+
+
+def _popen(argv, executable, cwd, env, flags, stdin, stdout, stderr):
+    """The one ``subprocess.Popen`` of this module. With all three standard
+    handles given and ``close_fds=True``, CPython passes exactly those three
+    in ``PROC_THREAD_ATTRIBUTE_HANDLE_LIST``: the child inherits nothing else,
+    whatever else in this process is inheritable."""
+    return subprocess.Popen(argv, executable=executable, cwd=cwd, env=env, stdin=stdin,
+                            stdout=stdout, stderr=stderr, creationflags=flags, close_fds=True)
+
+
+def _open_log(path) -> int:
+    """A C descriptor for *path* opened for appending only (created when
+    missing), shareable for reading, writing and deletion."""
+    handle = win32file.CreateFile(
+        os.fspath(path), _FILE_APPEND_DATA,
+        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+        None, win32con.OPEN_ALWAYS, win32con.FILE_ATTRIBUTE_NORMAL, None)
+    try:
+        descriptor = msvcrt.open_osfhandle(int(cast(Any, handle)), os.O_WRONLY)
+    except BaseException:
+        win32api.CloseHandle(cast(Any, handle))
+        raise
+    cast(Any, handle).Detach()  # the descriptor owns the handle now
+    return descriptor
+
+
+def _in_a_job() -> bool:
+    return bool(win32job.IsProcessInJob(win32api.GetCurrentProcess(), cast(Any, None)))
+
+
+@_os_errors()
+def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
+    argv = list(argv)
+    environment = {k.upper(): v for k, v in env.items()} if env is not None else None
+    executable = _program(argv, cwd, environment)
+    with ExitStack() as stack:
+        if log_path is None:
+            stdout: Any = subprocess.DEVNULL
+            stderr: Any = subprocess.DEVNULL
+        else:
+            stdout = _open_log(log_path)
+            stack.callback(os.close, stdout)
+            stderr = subprocess.STDOUT
+
+        def launch(flags):
+            return _popen(argv, executable, cwd, environment, flags, subprocess.DEVNULL, stdout, stderr)
+
+        if not _in_a_job():
+            return DetachedChild(launch(_DETACHED_FLAGS).pid, None)
+        try:
+            return DetachedChild(launch(_DETACHED_FLAGS | subprocess.CREATE_BREAKAWAY_FROM_JOB).pid, True)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != winerror.ERROR_ACCESS_DENIED:
+                raise
+        # The job forbids breakaway: the child starts inside it and lives only
+        # as long as the job does. DetachedChild says so.
+        return DetachedChild(launch(_DETACHED_FLAGS).pid, False)
+
+
+def breakaway_allowed() -> bool | None:
+    try:
+        if not _in_a_job():
+            return True
+        # A job this one is nested in can forbid what this one allows, and
+        # only some of them can be queried; a trial child answers for all.
+        # It is created suspended, with no console, and killed before it runs.
+        probe = _popen([sys.executable], sys.executable, None, None,
+                       win32process.CREATE_SUSPENDED | subprocess.DETACHED_PROCESS
+                       | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+                       subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL)
+    except OSError as exc:
+        return False if getattr(exc, "winerror", None) == winerror.ERROR_ACCESS_DENIED else None
+    except pywintypes.error:
+        return None
+    try:
+        probe.kill()
+        probe.wait(_CLEANUP_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return True
+
+
+# --------------------------------------------------- owned asyncio children
+
+_TH32CS_SNAPTHREAD = 0x4
+
+
+class _ThreadEntry(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", ctypes.c_long), ("tpDeltaPri", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD)]
+
+
+_first_thread = _kernel32.Thread32First
+_next_thread = _kernel32.Thread32Next
+for _walk in (_first_thread, _next_thread):
+    _walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry)]
+    _walk.restype = wintypes.BOOL
+_console_processes = _kernel32.GetConsoleProcessList
+_console_processes.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
+_console_processes.restype = wintypes.DWORD
+
+
+def _has_console() -> bool:
+    """Whether this process is attached to a console (the call fails, and
+    returns 0, when it is not)."""
+    buffer = (wintypes.DWORD * 1)()
+    return _console_processes(buffer, 1) != 0
+
+
+def _threads_of(pid) -> list[int]:
+    """The thread IDs of *pid*, from one Toolhelp32 snapshot."""
+    snapshot = _snapshot(_TH32CS_SNAPTHREAD, 0)
+    if snapshot is None or snapshot == _INVALID_HANDLE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    threads = []
+    try:
+        entry = _ThreadEntry()
+        entry.dwSize = ctypes.sizeof(_ThreadEntry)
+        more = _first_thread(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.th32OwnerProcessID == pid:
+                threads.append(entry.th32ThreadID)
+            more = _next_thread(snapshot, ctypes.byref(entry))
+        code = ctypes.get_last_error()
+        if code != winerror.ERROR_NO_MORE_FILES:
+            raise ctypes.WinError(code)
+    finally:
+        _close_handle(snapshot)
+    return threads
+
+
+def _resume(pid) -> None:
+    """Resume the suspended first thread of a process we created suspended
+    and still hold open (so neither its PID nor its thread can be reused)."""
+    threads = _threads_of(pid)
+    if not threads:
+        raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER, f"no thread to resume in PID {pid}")
+    for tid in threads:
+        thread = win32api.OpenThread(win32con.THREAD_SUSPEND_RESUME, False, tid)
+        try:
+            win32process.ResumeThread(thread)
+        finally:
+            win32api.CloseHandle(thread)
+
+
+class _Owned:
+    """The job, stop event and pinned process handle behind one owned child.
+    Released when the asyncio process object goes (the registry holds it
+    weakly), which closes the job and so kills whatever is left in it."""
+
+    def __init__(self, job, process, event, shares_console):
+        self.job: Any = job
+        self.process: Any = process
+        self.event: Any = event
+        self.shares_console = shares_console
+
+    def release(self):
+        handles, self.job, self.process, self.event = (self.job, self.process, self.event), None, None, None
+        with _Handles() as closing:
+            for handle in handles:
+                if handle is not None:
+                    closing.callback(win32api.CloseHandle, handle)
+
+
+#: asyncio process object -> what owns its tree.
+_owned: weakref.WeakKeyDictionary[Any, _Owned] = weakref.WeakKeyDictionary()
+
+
+async def async_owned_child(*argv, env=None, stdin=None, stdout=None, stderr=None):
+    # A decorator would cover only the creation of the coroutine, not its run.
+    with _os_errors():
+        return await _start_owned(list(argv), env, stdin, stdout, stderr)
+
+
+async def _start_owned(argv, env, stdin, stdout, stderr):
+    import asyncio
+
+    environment = {k.upper(): v for k, v in (env if env is not None else os.environ).items()}
+    executable = _program(argv, None, environment)
+    shares_console = _has_console()
+    flags = win32process.CREATE_SUSPENDED | subprocess.CREATE_NEW_PROCESS_GROUP
+    if not shares_console:
+        flags |= subprocess.CREATE_NO_WINDOW
+    name = f"Local\\self-learn-stop-{uuid4().hex}"
+    environment[STOP_EVENT_ENV] = name
+    with _Handles() as handles:
+        job = _new_job()
+        handles.callback(win32api.CloseHandle, job)
+        event = win32event.CreateEvent(None, True, False, name)
+        handles.callback(win32api.CloseHandle, event)
+        # Cancelled during this await, asyncio itself kills the (suspended) child.
+        proc = await asyncio.create_subprocess_exec(
+            *argv, executable=executable, env=environment, stdin=stdin, stdout=stdout,
+            stderr=stderr, creationflags=flags)
+        try:
+            # asyncio holds the process open, so this PID still names our child.
+            process = _open_process(proc.pid, _PROCESS_CONTAIN)
+            if process is None:
+                raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER, f"PID {proc.pid} vanished")
+            handles.callback(win32api.CloseHandle, process)
+            win32job.AssignProcessToJobObject(job, process)
+            _resume(proc.pid)
+        except BaseException as failure:
+            with _cleanup_after(failure):
+                proc.kill()  # still suspended (or in the job): it never ran our payload
+            raise
+        handles.pop_all()
+    _owned[proc] = _Owned(job, process, event, shares_console)
+    return proc
+
+
+def _job_of(proc):
+    owner = _owned.get(proc)
+    return owner if owner is not None and owner.job is not None else None
+
+
+@_os_errors()
+def stop_owned(proc, *, hard: bool) -> bool:
+    owner = _job_of(proc)
+    if owner is None:
+        # Not started by async_owned_child (or released): one process, and no
+        # soft channel to it.
+        if proc.returncode is not None:
+            return False
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return False
+        return True
+    if not _active_processes(owner.job):
+        return False
+    if hard:
+        win32job.TerminateJobObject(owner.job, 1)
+        return True
+    win32event.SetEvent(owner.event)
+    # Only while the leader runs is its PID certainly a live group on our
+    # console; a group ID that names no group must never reach this call.
+    if owner.shares_console and not _exited(owner.process):
+        win32api.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid)
+    return True
+
+
+async def _empty_the_job(proc, grace: float) -> None:
+    import asyncio
+
+    owner = _job_of(proc)
+    if owner is None or not _active_processes(owner.job):
+        return
+    win32job.TerminateJobObject(owner.job, 1)
+    deadline = time.monotonic() + grace
+    while _active_processes(owner.job) and time.monotonic() < deadline:
+        await asyncio.sleep(.01)
+
+
+async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool = False) -> None:
+    import asyncio
+
+    if proc.returncode is None and stop_owned(proc, hard=False):
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=kill_grace)
+        except TimeoutError:
+            if stop_owned(proc, hard=True) or wait_after_lost_kill:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=kill_grace)
+                except TimeoutError:
+                    pass
+    # The child is gone (or never will be); what it left in the job goes too.
+    with _os_errors():
+        await _empty_the_job(proc, kill_grace)
+
+
+def release_owned(proc) -> None:
+    owner = _owned.pop(proc, None)
+    if owner is not None:
+        with _os_errors():
+            owner.release()

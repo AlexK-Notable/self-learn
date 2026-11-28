@@ -192,3 +192,158 @@ def identity_predates_boot(identity: ProcessIdentity) -> bool:
     """POSIX identities carry no creation time, so there is nothing to compare;
     the orphan sweep's own checks (sidecar time, cmdline) stay in force."""
     return False
+
+
+# S-NEXT-w7-procs: detached background runs and the web UI's owned asyncio
+# children. Each body is a copy of the call it replaces; the original
+# statements are quoted beside it, so a later lane can switch the callers with
+# no change in behaviour.
+
+from .procs import DetachedChild  # noqa: E402 - the facade is loaded by now
+
+
+def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
+    if log_path is not None:
+        # worker._spawn_window (miner._spawn_run is the same call with its own
+        # argv and log):
+        #     with open(log_path, "a", encoding="utf-8") as out:
+        #         proc = subprocess.Popen(
+        #             [sys.executable, "-m", "self_learn.cli", "worker", "run", "--coalesce"],
+        #             cwd=str(home),
+        #             stdout=out,
+        #             stderr=subprocess.STDOUT,
+        #             start_new_session=True,
+        #             env=env,
+        #         )
+        #     return proc.pid
+        with open(log_path, "a", encoding="utf-8") as out:
+            proc = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=env,
+            )
+        return DetachedChild(proc.pid)
+    # overseer.notify.send (no cwd= and no env=, which leaves both at
+    # Popen's own default of None, as passing None here does):
+    #     subprocess.Popen(
+    #         [helper, "--line", line, "--page", POPUP_PAGE],
+    #         stdin=subprocess.DEVNULL,
+    #         stdout=subprocess.DEVNULL,
+    #         stderr=subprocess.DEVNULL,
+    #         start_new_session=True,
+    #     )
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return DetachedChild(proc.pid)
+
+
+def breakaway_allowed() -> bool | None:
+    """POSIX has no jobs to break away from."""
+    return None
+
+
+async def async_owned_child(*argv, env=None, stdin=None, stdout=None, stderr=None):
+    import asyncio
+
+    # ui/runner.py RealRunner._spawn (no stdin=, so create_subprocess_exec's
+    # default None):
+    #     proc = await create_subprocess_exec(
+    #         *cmd,
+    #         env=full_env,
+    #         stdout=asyncio_subprocess.PIPE,
+    #         stderr=asyncio_subprocess.PIPE,
+    #         start_new_session=True,
+    #     )
+    # ui/ask_runner.py RealAskRunner.start (start_summary and check_login pass
+    # stdin=asyncio_subprocess.DEVNULL):
+    #     proc = await asyncio.create_subprocess_exec(
+    #         *self._argv_prefix, "ask", item_id, "--message-file", "-", "--stream",
+    #         env=self._full_env(), stdin=asyncio_subprocess.PIPE,
+    #         stdout=asyncio_subprocess.PIPE, stderr=asyncio_subprocess.PIPE,
+    #         start_new_session=True,
+    #     )
+    return await asyncio.create_subprocess_exec(
+        *argv, env=env, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=True,
+    )
+
+
+def stop_owned(proc, *, hard: bool) -> bool:
+    sig = signal.SIGKILL if hard else signal.SIGTERM
+    # ui/runner.py _signal_group(proc, sig) (ask_runner's _signal_group(pid,
+    # sig) is the same calls with proc.pid; killpg receives the same number,
+    # since pgid == pid in that branch):
+    #     try:
+    #         pgid = os.getpgid(proc.pid)
+    #         if pgid == proc.pid:
+    #             os.killpg(pgid, sig)
+    #         else:
+    #             os.kill(proc.pid, sig)
+    #     except ProcessLookupError:
+    #         return False
+    #     return True
+    try:
+        pgid = os.getpgid(proc.pid)
+        if pgid == proc.pid:
+            os.killpg(pgid, sig)
+        else:
+            os.kill(proc.pid, sig)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool = False) -> None:
+    import asyncio
+
+    # ui/runner.py _terminate_then_kill (wait_for is asyncio.wait_for):
+    #     if proc.returncode is not None:
+    #         return
+    #     if not _signal_group(proc, signal.SIGTERM):
+    #         return
+    #     try:
+    #         await wait_for(proc.wait(), timeout=kill_grace)
+    #         return
+    #     except TimeoutError:
+    #         pass
+    #     if not _signal_group(proc, signal.SIGKILL):
+    #         return
+    #     try:
+    #         await wait_for(proc.wait(), timeout=kill_grace)
+    #     except TimeoutError:
+    #         pass
+    # ui/ask_runner.py RealAskRunner._terminate is the same except that it
+    # ignores the result of the SIGKILL and always waits again:
+    #     _signal_group(proc.pid, signal.SIGKILL)
+    #     try:
+    #         await asyncio.wait_for(proc.wait(), timeout=self._kill_grace)
+    #     except TimeoutError:
+    #         pass
+    if proc.returncode is not None:
+        return
+    if not stop_owned(proc, hard=False):
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=kill_grace)
+        return
+    except TimeoutError:
+        pass
+    if not stop_owned(proc, hard=True) and not wait_after_lost_kill:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=kill_grace)
+    except TimeoutError:
+        pass
+
+
+def release_owned(proc) -> None:
+    """POSIX holds nothing for an owned child: the process group is enough."""

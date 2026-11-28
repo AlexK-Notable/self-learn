@@ -385,6 +385,51 @@ jobs:
             throw "Windows containment test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
           }
 
+      - name: Windows detached and owned child contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "detached-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_procs_detached.py -p no:cacheprovider -q -rsP --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "Linux process contract" })
+          $expected = @(
+            'test_windows_detached_child_and_its_launchers_abrupt_death[allow]'
+            'test_windows_detached_child_and_its_launchers_abrupt_death[allow-inside-forbid]'
+            'test_windows_detached_child_and_its_launchers_abrupt_death[forbid]'
+            'test_windows_detached_child_and_its_launchers_abrupt_death[forbid-without-kill-on-close]'
+            'test_windows_breakaway_allowed_from_here'
+            'test_windows_detached_output_appends_and_only_standard_handles_are_inherited'
+            'test_windows_detached_without_a_log_writes_to_nul'
+            'test_windows_detached_console_flags_keep_grandchildren_windowless'
+            'test_windows_resolution_refuses_shims_and_the_current_folder[spawn_detached]'
+            'test_windows_resolution_refuses_shims_and_the_current_folder[async_owned_child]'
+            'test_windows_owned_child_and_grandchild_are_in_its_job'
+            'test_windows_detached_run_started_by_an_owned_child_escapes_its_job'
+            'test_windows_cancel_stops_the_tree'
+            'test_windows_soft_stop_then_hard_stop_leaves_no_survivor'
+            'test_windows_hard_stop_alone_kills_the_whole_job'
+            'test_windows_watchdog_timeout_then_terminate'
+            'test_windows_grandchild_holding_stderr_does_not_hang_the_reader'
+            'test_windows_dropping_the_process_object_kills_the_tree'
+            'test_windows_a_process_started_elsewhere_is_stopped_alone'
+            'test_windows_selector_loop_refuses_before_anything_starts'
+            'test_windows_what_the_soft_stop_reaches[console-break]'
+            'test_windows_what_the_soft_stop_reaches[console-default]'
+            'test_windows_what_the_soft_stop_reaches[console-event]'
+            'test_windows_what_the_soft_stop_reaches[console-stubborn]'
+            'test_windows_what_the_soft_stop_reaches[no-console-break]'
+            'test_windows_what_the_soft_stop_reaches[no-console-default]'
+            'test_windows_what_the_soft_stop_reaches[no-console-event]'
+            'test_windows_what_the_soft_stop_reaches[no-console-stubborn]'
+          )
+          $delta = Compare-Object $expected @($ran | ForEach-Object { $_.name })
+          if ($delta -or $unexpected.Count -or $skips.Count -ne 32) {
+            throw "Windows detached test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(

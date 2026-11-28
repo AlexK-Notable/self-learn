@@ -329,6 +329,13 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "this code",
         "keep",
     ),
+    # S-NEXT-w7-procs: the facade's POSIX copy of the two sites above; when
+    # they switch to `procs.spawn_detached` their own entries rot and go.
+    ("cli", "primitives/_procs_posix.py", "spawn_detached"): (
+        "subprocess.Popen stdout redirect (worker.log, miner.log), copied from "
+        "worker._spawn_window and miner._spawn_run; not a content write by this code",
+        "keep",
+    ),
     ("cli", "worker.py", "_spawn_window"): (
         "subprocess.Popen stdout redirect (worker.log), not a content write by "
         "this code",
