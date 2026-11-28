@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from importlib import resources
 from pathlib import Path
 
 import markupsafe
@@ -34,8 +35,25 @@ from .sse import AppEventHub
 __all__ = ["create_app"]
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]  # .../ui
-TEMPLATES_DIR = _PACKAGE_ROOT / "templates"
-STATIC_DIR = _PACKAGE_ROOT / "static"
+
+
+def _resource_dir(name: str) -> Path:
+    """The ``templates`` or ``static`` folder. First rung: the folder beside
+    ``src/`` in a checkout, exactly the path this module always used, so a
+    live checkout serves (and reloads) its own files as before. Only when
+    that folder is absent (an installed wheel has no checkout around it) the
+    copy the wheel carries as package data, ``self_learn_ui/_data/<name>``
+    (``pyproject.toml``'s force-include). With neither, the checkout path is
+    returned, so the failure names the same path it always did."""
+    source = _PACKAGE_ROOT / name
+    if source.exists():
+        return source
+    packaged = resources.files("self_learn_ui") / "_data" / name
+    return packaged if isinstance(packaged, Path) and packaged.is_dir() else source
+
+
+TEMPLATES_DIR = _resource_dir("templates")
+STATIC_DIR = _resource_dir("static")
 
 
 def _build_templates() -> Jinja2Templates:

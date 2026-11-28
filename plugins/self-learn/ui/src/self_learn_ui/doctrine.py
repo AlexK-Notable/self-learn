@@ -31,6 +31,7 @@ package's location.)
 
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
 
 from self_learn.primitives import fsops
@@ -54,8 +55,19 @@ def plugin_references_dir() -> Path:
     """The skill's ``references/`` dir, resolved relative to THIS file's
     own installed location (09 §11 Y-2 root 3). ``doctrine.py`` lives at
     ``plugins/self-learn/ui/src/self_learn_ui/doctrine.py`` — four
-    ``parents[]`` hops up is ``plugins/self-learn``."""
-    return Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
+    ``parents[]`` hops up is ``plugins/self-learn``.
+
+    That checkout path is the first rung, unchanged. Only when it is absent
+    (an installed wheel has no checkout around it) the copy the ui wheel
+    carries as package data, ``self_learn_ui/_data/references``
+    (``pyproject.toml``'s force-include): still this package's own
+    location, never the CLI's and never a home. With neither, the checkout
+    path is returned, so the failure names the same path it always did."""
+    source = Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
+    if source.exists():
+        return source
+    packaged = resources.files("self_learn_ui") / "_data" / "references"
+    return packaged if isinstance(packaged, Path) and packaged.is_dir() else source
 
 
 def routing_doctrine_path() -> Path:

@@ -54,6 +54,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
@@ -182,8 +183,18 @@ def package_skill_refs() -> Path:
     (doc 13 T-H3: doctrine/rubric/registry ship with the product beside
     the skill — never via any home; this also pre-clears the step-2
     product-repo extraction). src/self_learn/worker.py → parents[3] is
-    ``plugins/self-learn``."""
-    return Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
+    ``plugins/self-learn``.
+
+    That checkout path is the first rung, unchanged. Only when it is absent
+    (an installed wheel has no checkout around it) the copy the wheel
+    carries as package data, ``self_learn/_data/references``
+    (``pyproject.toml``'s force-include). With neither, the checkout path
+    is returned, so the failure names the same path it always did."""
+    source = Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
+    if source.exists():
+        return source
+    packaged = resources.files("self_learn") / "_data" / "references"
+    return packaged if isinstance(packaged, Path) and packaged.is_dir() else source
 
 
 # --------------------------------------------------- U-composer: the shared

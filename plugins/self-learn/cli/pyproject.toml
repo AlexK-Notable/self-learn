@@ -35,6 +35,14 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/self_learn"]
 
+# Package data (Windows port, 8K): the skill's references (doctrine, rubric,
+# methods, the card-sections registry, the lesson-writing passage) ride inside
+# the wheel under self_learn/_data/references, included from where they live.
+# worker.package_skill_refs and lesson_writing.path read the checkout's folder
+# first and fall back to this copy only when it is absent.
+[tool.hatch.build.targets.wheel.force-include]
+"../skills/self-learn/references" = "self_learn/_data/references"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

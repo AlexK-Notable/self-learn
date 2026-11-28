@@ -553,6 +553,26 @@ jobs:
             throw "Windows skill script test selection changed: $ran"
           }
 
+      - name: Windows UI package data
+        working-directory: plugins/self-learn/ui
+        env:
+          SELF_LEARN_UI_NO_BROWSER: "1"
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "ui-package-data.xml"
+          uv run --no-sync python -m pytest tests/test_packaging.py -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_wheel_install_serves_pages_and_files_from_package_data'
+            'test_checkout_folders_win_over_package_data'
+            'test_live_checkout_resolves_to_its_own_folders'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 0) {
+            throw "Windows UI package data test selection changed: ran $ran, skipped $($skips.Count)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
