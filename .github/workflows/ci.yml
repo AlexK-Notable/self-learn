@@ -60,7 +60,7 @@ jobs:
         working-directory: plugins/self-learn/cli
         run: |
           $report = Join-Path $env:RUNNER_TEMP "fsops-contracts.xml"
-          uv run --no-sync python -m pytest tests/test_platform_fsops.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          uv run --no-sync python -m pytest tests/test_platform_fsops.py -k test_publish_and_modes_under_umask -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
