@@ -211,11 +211,8 @@ def _tree(pid: int, identity: str) -> list[tuple[int, str]]:
             if child in seen or len(found) >= MAX_TREE:
                 continue
             seen.add(child)
-            try:
-                created = _identity(child)
-            except OSError:
-                continue
-            if created is None or not born <= int(created) <= taken:
+            created = _identity(child)
+            if created is None or not int(created) <= taken:
                 continue
             found.append((child, created))
             queue.append((child, int(created)))
@@ -241,7 +238,7 @@ def _ancestors(pid: int, identity: str) -> list[tuple[int, str]]:
             created = _identity(parent)
         except OSError:
             break
-        if created is None or int(created) > born or watch_path(parent, created).is_file():
+        if created is None or watch_path(parent, created).is_file():
             break
         chain.append((parent, created))
         child, born = parent, int(created)
@@ -365,10 +362,10 @@ class _Watch:
         if identity is None:  # this process is running; belt only
             raise OSError(f"cannot read this process's creation time (pid {pid})")
         folder = stop_dir()
-        fsops.ensure_private_parent(folder)  # links and foreign folders refused first
+        pass  # MUTATION: folder not checked first
         self.path = stop_path(pid, identity)
         self.marker = watch_path(pid, identity)
-        ancestors = _ancestors(pid, identity)
+        ancestors = []  # MUTATION
         self.addressed = [self.path, *(stop_path(p, i) for p, i in ancestors)]
         _drop_stale(folder)
         _write_stop(self.marker, json.dumps(
@@ -399,7 +396,9 @@ class _Watch:
             self._done.set()
             if self._thread is not None:
                 self._thread.join(POLL_SECS * 10)
-        finally:
+        except Exception:
+            raise
+        if True:
             try:
                 if self._previous is not _UNSET:
                     _set_break(self._previous)
@@ -420,8 +419,8 @@ def watch(handler: Callable[..., Any]) -> None:
     :func:`unwatch` undoes a start that a stop interrupted."""
     unwatch()
     current = _Watch()
-    _active.append(current)
     current.start(handler)
+    _active.append(current)
 
 
 def unwatch() -> None:
