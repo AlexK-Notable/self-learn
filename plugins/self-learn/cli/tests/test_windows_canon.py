@@ -408,7 +408,7 @@ def other_drive(tmp: Path):
 
 
 @windows
-def test_windows_cross_drive_pointer(canon, capsys):
+def test_windows_cross_drive_pointer(canon):
     folder, subst = other_drive(canon.root)
     print(f"other drive: {folder} ({'subst' if subst else 'volume'})")
     try:
@@ -421,17 +421,35 @@ def test_windows_cross_drive_pointer(canon, capsys):
         canon.run("host", "add", str(plain), "--mode", "plain")
         record_id = canon.teach(plain, "project", "Cross-drive fact")
         assert os.path.splitdrive(str(shelf))[0].upper() != os.path.splitdrive(str(surface))[0].upper()
-        canon.route(record_id, f"reference:{shelf}")
+        # The verb reaches the region check with the other-drive shelf and
+        # refuses it as on Linux: a plain host's existing foreign shelf has
+        # no compile record yet. Nothing is written.
+        assert cli.main(["route", record_id, "--dest", f"reference:{shelf}", "--no-push"]) == 1
+        refusal = canon.capsys.readouterr().err
+        assert "hand-edited outside self-learn (unknown)" in refusal and "recompile --adopt" in refusal
+        assert surface.read_bytes() == b"# Plain\r\n\r\nOwn text.\r\n" and shelf.read_bytes() == NOTES_SEED
+
+        # The host write's own calls, as the route makes them once the shelf
+        # is accepted: append to the other-drive shelf, point at it.
+        from self_learn.records import Record
+
+        record = Record.create(type="knowledge", scope="project", source="teach", fact="Cross-drive fact")
+        appended = compilers.compile_reference(plain / "references", record, dest=str(shelf))
+        assert appended.applied and appended.path == shelf
+        token = compilers.pointer_token(surface, shelf)
+        assert token == shelf.as_posix() and "\\" not in token and token[1:3] == ":/"
+        pointer = compilers.apply_pointer(surface, appended.path, label="cross-drive shelf")
+        assert pointer.changed and pointer.token == token
         data = surface.read_bytes()
         pre, pointers, post = block(data, PBEGIN, PEND)
         assert pre == b"# Plain\r\n\r\nOwn text.\r\n\r\n" and post == b"\r\n"
-        token = shelf.as_posix()
-        assert "\\" not in token and token[1:3] == ":/"
-        assert f"- `{token}` — ".encode() in pointers
+        assert f"- `{token}` \u2014 cross-drive shelf\r\n".encode() in pointers
         assert only_crlf(data)
         assert compilers.surface_names_target(surface, shelf)
         notes = shelf.read_bytes()
         assert notes.startswith(NOTES_SEED + b"\r\n## ") and only_crlf(notes)
+        compilers.retire_reference(plain / "references", record.id, dest=str(shelf))
+        assert shelf.read_bytes() == NOTES_SEED
     finally:
         if subst:
             subprocess.run(["subst", f"{subst}:", "/D"], check=False, timeout=30)
@@ -451,7 +469,7 @@ def test_windows_memory_prune_keeps_index_line_endings(canon):
             f"---\r\nname: {name}\r\ndescription: Memory {name}\r\nmetadata:\r\n  type: project\r\n---\r\n"
             f"\r\nBody {name}.\r\n".encode())
     canon.monkeypatch.chdir(proj)
-    canon.run("import", "--memory", str(memory), "--no-push")
+    canon.run("import", "--memory", str(memory))
     canon.run("list", "--json")
     one = next(item["id"] for item in json.loads(canon.stdout) if "Memory one" in item["title"])
     canon.run("reject", one, "--no-push")
