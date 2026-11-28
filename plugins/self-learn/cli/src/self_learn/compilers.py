@@ -969,7 +969,7 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
     if changed:
         # Sprint 3 M-I wave 3 (D6): host canon, same reasoning as
         # compile_managed_file above -- follow_symlinks=True.
-        if os.name == "nt" and False:  # MUTANT M2a
+        if os.name == "nt":  # the file keeps its own line endings
             new_text = keep_line_endings(path, new_text)
         fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return PathsResult(
@@ -1691,7 +1691,7 @@ def retire_empty_shelf(shelf: Path, surface: Path | None, plan: EmptyShelf) -> N
     if os.name == "nt" and plan.surface_changed and surface is not None and plan.surface_text is not None:
         # The surface keeps its own line endings.
         fsops.atomic_write(
-            surface, plan.surface_text, preserve_mode=True,  # MUTANT M2b
+            surface, keep_line_endings(surface, plan.surface_text), preserve_mode=True,
             fsync=True, follow_symlinks=True,
         )
     elif plan.surface_changed and surface is not None and plan.surface_text is not None:
