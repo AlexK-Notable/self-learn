@@ -679,7 +679,6 @@ def _adopt_descendants(job, root_pid, root, adopted, uncovered, left_out):
     in the job, and a failed sweep must not cost it its life."""
     tree = {root_pid: root}
     judged = {root_pid}
-    return tree, True
     for _ in range(_ADOPTION_PASSES):
         grew = False
         try:
