@@ -448,12 +448,12 @@ def test_flagged_spool_uses_verified_private_quarantine(home, monkeypatch, capsy
     assert str(saved) in err and report.rejected[0] in err and "synthetic-marker" not in err
     assert saved.read_bytes() == flagged and spool.read_bytes() == b""
     acl = win32security.GetFileSecurity(str(saved), win32security.DACL_SECURITY_INFORMATION).GetSecurityDescriptorDacl()
-    allowed = {str(acl.GetAce(i)[2]) for i in range(acl.GetAceCount())}
+    allowed = {win32security.ConvertSidToStringSid(acl.GetAce(i)[2]) for i in range(acl.GetAceCount())}
     import win32api
     import win32con
     from contextlib import closing
     with closing(win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)) as token:
-        owner = str(win32security.GetTokenInformation(token, win32security.TokenUser)[0])
+        owner = win32security.ConvertSidToStringSid(win32security.GetTokenInformation(token, win32security.TokenUser)[0])
     assert allowed == {owner, "S-1-5-18", "S-1-5-32-544"}
     blob = git(home, "show", "HEAD:telemetry/" + spool.name)
     assert json.loads(blob)["witness"] == "clean sibling"
@@ -625,12 +625,25 @@ def test_repair_hints_follow_capabilities_and_statement_captures(home, tmp_path,
         m.setattr(cli, "_main", lambda *args: (_ for _ in ()).throw(gitops.GitOpsError("test")))
         assert cli._netted_main([]) == cli.EXIT_GIT_FAILED
         assert "self-learn reconcile and self-learn status are not available" in capsys.readouterr().err
+    with monkeypatch.context() as m:
+        m.setattr(gitops, "push_pending", lambda *args, **kwargs: gitops.PushResult(ok=False))
+        assert cli.main(["teach", "--user", "--fact", "push hint witness"]) == 0
+        assert "self-learn push is not available on Windows yet" in capsys.readouterr().err
+    with monkeypatch.context() as m:
+        def refuse_stage(*args, **kwargs):
+            raise gitops.GitOpsError("stage failure witness")
+        m.setattr(gitops, "stage", refuse_stage)
+        assert cli.main(["teach", "--user", "--no-push", "--fact", "stage hint witness"]) == teach.EXIT_HALF_WRITTEN
+        err = capsys.readouterr().err
+        assert "CAPTURE NOT COMMITTED" in err and "self-learn reconcile is not available on Windows yet" in err
     intent = intents.intents_dir(home) / "broken.json"
     intent.parent.mkdir(exist_ok=True)
     intent.write_bytes(b'{"id":"broken","steps":null}')
     with pytest.raises(intents.LedgerStoppedError, match="self-learn reconcile is not available"):
         with intents.ledger_write(home):
             pytest.fail("a malformed intent must stop the writer")
+    with pytest.raises(hosts.HostsError, match="kind must be"):
+        hosts.host_add(home, tmp_path, "invalid")
     monkeypatch.setitem(capabilities.AVAILABLE, "ledger", True)
     assert "not available" not in teach._statement_retry_hint("words", "ref")
     with pytest.raises(intents.LedgerStoppedError) as stopped:
