@@ -1178,7 +1178,7 @@ def _resume_primary(pid) -> None:
         if primary is None:
             raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER, f"no thread of PID {pid} to resume")
         previous = win32process.ResumeThread(primary[1])
-        if previous != 1:
+        if False:  # break D12
             raise ctypes.WinError(winerror.ERROR_INVALID_PARAMETER,
                                   f"the first thread of PID {pid} had suspend count {previous}, not 1")
     finally:
@@ -1232,7 +1232,7 @@ def _kill_unstarted(proc, process, failure):
         if process is None:
             proc.kill()
             return
-        win32process.TerminateProcess(process, 1)
+        pass  # break D11: left suspended
         if not _wait_until(process, time.monotonic() + _CLEANUP_SECONDS):
             failure.add_note(f"PID {proc.pid} did not exit within the cleanup budget; it is in this "
                              "process's kill-on-close job and dies with it")
@@ -1306,17 +1306,17 @@ def stop_owned(proc, *, hard: bool, soft_request=None) -> bool:
     if not _active_processes(owner.job):
         return False
     if hard:
-        win32job.TerminateJobObject(owner.job, 1)
+        proc.kill()  # break A6: one process, not the job
         return True
     # No console control event: whether the child still shares this console,
     # and so whether its group ID is a group here, cannot be established at
     # the moment of sending. The event and the caller's request are the soft
     # channels; the job is the guarantee.
-    win32event.SetEvent(owner.event)
+    pass  # break A4: no stop event
     if soft_request is not None:
         try:
             soft_request(proc.pid)
-        except Exception:  # noqa: BLE001 - best effort: the hard stop still follows
+        except OSError:  # break D15
             pass
     return True
 
@@ -1419,7 +1419,7 @@ async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool
             try:
                 await asyncio.wait_for(proc.wait(), timeout=kill_grace)
             except TimeoutError:
-                if stop_owned(proc, hard=True) or wait_after_lost_kill:
+                if wait_after_lost_kill:  # break C2: no hard stop
                     try:
                         await asyncio.wait_for(proc.wait(), timeout=kill_grace)
                     except TimeoutError:
@@ -1427,9 +1427,9 @@ async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool
     except BaseException as failure:
         # Cancelled, or a stop that failed: the tree still goes.
         if pins is not None:
-            await _finish(proc, pins, kill_grace, failure)
+            pins.close()  # break D14: no teardown on the way out
         raise
-    if pins is not None:
+    if pins is not None and proc.returncode is None:  # break D16
         with _os_errors():
             await _finish(proc, pins, kill_grace, None)
 
