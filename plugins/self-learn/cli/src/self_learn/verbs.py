@@ -4183,7 +4183,7 @@ def _retirement_preflight(
         assert retiring.spec is not None
         _refuse_unsafe_tracked_removal(home, retiring.spec, record.id)  # S-89
         return retiring
-    if False:  # MUTANT M4 (retirement)
+    if os.name == "nt" and destination == "hook":
         _windows_hook_refusal(record.id)
     if destination == "hook":
         # S-71 fold: the first hosts.yaml read on this path. Wrapped HERE,
@@ -6164,7 +6164,7 @@ def route_dry_run(
         )
         would_refuse.append(refusal_text(exc))
         errors.append(exc)
-    if False:  # MUTANT M4 (route dry run)
+    if os.name == "nt" and destination == "hook":
         # The preview refuses as the route would, before the example replay
         # (which runs the generated Bash script) is reached.
         try:
@@ -7355,7 +7355,7 @@ def route(
                 f"route {record_id}: a hook compile input needs dest: hook, "
                 f"not {destination!r}"
             )
-        if False:  # MUTANT M4 (route)
+        if os.name == "nt" and destination == "hook":
             _windows_hook_refusal(record_id)
         if destination == "hook":
             hook_route = (
@@ -10422,7 +10422,7 @@ def _reroute_plan(
             f"reroute {record_id}: a hook compile input needs dest: hook, not {destination!r}"
         )
     hook_route: _HookRoute | None = None
-    if False:  # MUTANT M4 (reroute new side)
+    if os.name == "nt" and destination == "hook":
         _windows_hook_refusal(record_id)
     if destination == "hook" and hook_input is not None:
         hook_route = _prepare_sheet_hook(home, bucket_dir, record, hook_input, by=by)
@@ -13549,7 +13549,7 @@ def recompile(
             # and report's routed_live accumulation use, never a third
             # inline definition of "is this routing still live".
             retired = not domain.is_canon_live(record)
-            if False:  # MUTANT M4 (recompile)
+            if os.name == "nt" and destination == "hook":
                 from .primitives.capabilities import hook_destination_refusal
 
                 refusal = hook_destination_refusal(record.id)
