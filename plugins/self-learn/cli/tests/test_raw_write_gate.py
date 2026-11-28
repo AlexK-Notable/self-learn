@@ -18,7 +18,7 @@ write or an append, either one bypasses this primitive's atomicity/
 durability guarantees. `primitives/_fsops_posix.py` itself is exempt by
 construction (it IS the primitive; a raw write inside its own
 implementation is not a violation of a rule it defines). The CLI POSIX
-lock backend is also exempt: lock metadata must be opened in place.
+and Windows lock backends are also exempt because they open lock metadata in place.
 
 **Why every hit needs a name, not just the migrated sites.** M-I's own
 census (this file) found 58 distinct (file, enclosing-function) raw
@@ -131,7 +131,7 @@ def _is_write_mode(mode_val: object) -> bool:
 
 def _scan_module(path: Path, tree_name: str, relpath: str) -> list[Violation]:
     if tree_name == "cli" and relpath.replace("\\", "/") in (
-        "primitives/_fsops_posix.py", "primitives/_locks_posix.py",
+        "primitives/_fsops_posix.py", "primitives/_locks_posix.py", "primitives/_locks_windows.py",
     ):
         return []
     src = path.read_text(encoding="utf-8")
@@ -479,6 +479,17 @@ def test_posix_lock_open_is_visible_outside_its_named_cli_exemption():
         hits = _scan_module(path, tree, name)
         assert any(v.func == "open_lock" and v.kind == "open(mode=...)" for v in hits)
     assert _scan_module(path, "cli", relpath) == []
+
+
+def test_windows_lock_opens_are_visible_outside_their_named_cli_exemption():
+    relpath = "primitives/_locks_windows.py"
+    path = CLI_SRC / relpath
+    assert path.is_file()
+    assert _scan_module(path, "cli", relpath) == []
+    for tree, name in [("cli", "caller.py"), ("ui", relpath)]:
+        hits = _scan_module(path, tree, name)
+        assert [(v.func, v.kind) for v in hits] == [("open_lock", "open(mode=...)")] * 3
+        assert len({v.lineno for v in hits}) == 3
 
 
 # ============================================================ synthetic
