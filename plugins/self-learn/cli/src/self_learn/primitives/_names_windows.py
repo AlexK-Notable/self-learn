@@ -57,7 +57,7 @@ def _canonical(path: Path | str, *, strict: bool = False) -> str:
 
 def project_slug(path: Path | str) -> str:
     key = _canonical(path, strict=True)
-    hint = re.sub("[^a-z0-9]+", "-", Path(key).name.lower()).strip("-")[:32] or "project"
+    hint = re.sub("[^a-z0-9]+", "-", Path(key).name.lower()).strip("-")[:31] or "project"
     return f"w1-{hint}-{path_fingerprint(key, length=32)}"
 
 
@@ -66,7 +66,7 @@ def project_digest(path: Path | str) -> str:
 
 
 def registration_key(resolved: Path | str) -> str:
-    return _canonical(resolved)
+    return str(resolved)
 
 
 def home_spelling(home: Path | str) -> str:
@@ -80,8 +80,6 @@ def home_digest(home: Path | str) -> str:
 def component_path(root: Path, name: str, *, suffix: str = "") -> Path:
     _check_component(name)
     component = name + suffix
-    if suffix:
-        _check_component(component)
     candidate = root / component
     absolute = candidate.absolute()
     for entry in (*reversed(absolute.parents), absolute):
@@ -89,7 +87,7 @@ def component_path(root: Path, name: str, *, suffix: str = "") -> Path:
             attributes = entry.lstat().st_file_attributes
         except FileNotFoundError:
             continue
-        if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        if entry == absolute and attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise ValueError(f"reparse point in component path: {entry}")
     candidate.resolve().relative_to(root.resolve())
     return candidate
@@ -106,7 +104,7 @@ def cache_root(env: Mapping[str, str] | None = None) -> Path:
         return Path(raw).expanduser() / "self-learn"
     from platformdirs import user_cache_path
 
-    return user_cache_path("self-learn", appauthor=False, ensure_exists=False)
+    return user_cache_path("self-learn", appauthor=False, ensure_exists=False) / "self-learn"
 
 
 def user_home() -> Path:
@@ -130,7 +128,7 @@ def runtime_root(home: Path | str | None = None, *, fallback: Callable[[], Path]
 def claude_root(*, use: Literal["default", "runtime", "transcripts", "reference"],
                 env: Mapping[str, str] | None = None) -> Path:
     env = os.environ if env is None else env
-    override = env.get("SELF_LEARN_CLAUDE_DIR") or env.get("CLAUDE_CONFIG_DIR")
+    override = env.get("SELF_LEARN_CLAUDE_DIR")
     return Path(override).expanduser() if override else user_home() / ".claude"
 
 
@@ -145,7 +143,7 @@ def git_arg(repo: Path, path: Path | str) -> str:
     root = _ordinary_path(repo).resolve(strict=True)
     if operand.drive and operand.drive.lower() != root.drive.lower():
         raise ValueError(f"Git operand on another drive: {path}")
-    anchored = root / operand
+    anchored = operand.absolute()
     # Resolve the parent to detect junction escapes. The last entry may itself
     # be a tracked link: Git names that entry, not its target.
     if anchored == root or anchored.name == "..":
@@ -199,6 +197,6 @@ def porcelain_paths(repo: Path, data: bytes) -> list[tuple[str, Path]]:
             source = next(fields, None)
             if not source:
                 raise ValueError("missing porcelain rename/copy source")
-            source.decode("utf-8")
+            source.decode("utf-8", errors="replace")
         rows.append((status, repo / path))
     return rows
