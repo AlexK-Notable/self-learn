@@ -370,7 +370,7 @@ def _sweep_one_windows(
     if live is None:
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
         return
-    if live.image != saved.image or not _is_claude_image(saved.image, record.get("cli")):
+    if live != saved or not _is_claude_image(saved.image, record.get("cli")):
         _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_cmdline_mismatch, pid)
         return
     if not (started_at < process_start):
