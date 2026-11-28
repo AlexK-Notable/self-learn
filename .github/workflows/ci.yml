@@ -65,7 +65,7 @@ jobs:
           $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
           $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
-          $unexpected = @($skips | Where-Object { $_.skipped.message -ne "Linux filesystem contract" })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "Linux filesystem contract" })
           if ($ran.Count -ne 28 -or $skips.Count -ne 7 -or $unexpected.Count -ne 0) {
             throw "Expected 28 executed fsops cases and 7 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
           }
