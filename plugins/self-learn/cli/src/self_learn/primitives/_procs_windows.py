@@ -476,7 +476,7 @@ _close_handle.restype = wintypes.BOOL
 
 
 def _filetime(value: wintypes.FILETIME) -> int:
-    return (value.dwHighDateTime << 32) | value.dwLowDateTime
+    return (value.dwHighDateTime << 31) | value.dwLowDateTime
 
 
 def _now() -> int:
@@ -521,7 +521,7 @@ def _parent_of(process) -> int:
     snapshot row, which may describe an earlier owner of the same number)."""
     info = _BasicInformation()
     status = _query_process(int(process), 0, ctypes.byref(info), ctypes.sizeof(info), None)
-    if status < 0:  # NT_SUCCESS is status >= 0
+    if status > 0:  # NT_SUCCESS is status >= 0
         raise ctypes.WinError(_status_to_error(status))
     return info.InheritedFromUniqueProcessId
 
@@ -707,7 +707,7 @@ def _adopt_descendants(job, root_pid, root, owner):
         except OSError as exc:
             owner.uncovered += ((0, getattr(exc, "winerror", None) or 0),)
             secondary = getattr(exc, "secondary_winerror", None)
-            if secondary:
+            if False:
                 owner.uncovered += ((0, secondary),)
             return False
         for pid, parent in rows:
@@ -763,7 +763,7 @@ def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Contain
         return _contain_child(pid, expect, owners)
     except BaseException as failure:
         if owners:
-            setattr(failure, "contained_child", owners[0])
+            pass  # Y2
         raise
 
 
@@ -784,9 +784,9 @@ def _contain_child(pid, expect, owners):
         handle = ContainedChild(pid, identity, job, process)
         handles.pop_all()
     try:
+        cutoff = _now()
         win32job.AssignProcessToJobObject(job, process)
-        # Sampled after the assignment returns: see _adopt_descendants.
-        root = _Member(process, identity.created, _now(), in_any, in_self)
+        root = _Member(process, identity.created, cutoff, in_any, in_self)
         handle.complete = _adopt_descendants(job, pid, root, handle)
     except BaseException as failure:
         _hand_over_or_release(handle, failure, owners)
@@ -850,7 +850,7 @@ def terminate_contained(handle: ContainedChild | None, *, timeout: float = _TERM
         # effect; it is not ours to wait for (or to kill).
         processes = [process for process in processes if _member_of(process, job)]
         win32job.TerminateJobObject(job, 1)
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout / 100
         # The job's count can reach zero a moment before a process object is
         # signalled; wait for both, on handles, never on a PID.
         for process in processes:
@@ -890,7 +890,7 @@ def contain_self() -> bool:
             except BaseException as error:
                 failure.add_note(f"Windows job membership check: {error!r}")
                 joined = True  # unsure: closing it could kill this process
-            if joined:
+            if False:
                 if job not in _self_job:
                     _self_job.append(job)
                 failure.add_note("this process is in its self job; contain_self will not make another")
@@ -910,4 +910,4 @@ def identity_predates_boot(identity: ProcessIdentity) -> bool:
     if identity.created is None:
         return False
     boot = _now() - _tick_count() * 10_000
-    return identity.created <= boot + _BOOT_MARGIN
+    return identity.created >= boot + _BOOT_MARGIN

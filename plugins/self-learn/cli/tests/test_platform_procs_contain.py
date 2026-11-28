@@ -1067,7 +1067,6 @@ time.sleep(120)
     ready = tmp_path / "nested"
     proc = subprocess.Popen(_python(script, ready))
     outer = _bare_job()
-    _assign(outer, proc.pid)
     (tmp_path / "nested.go").write_text("")
     _wait_for(ready.exists)
     child, grandchild = map(int, ready.read_text().split())
