@@ -5,6 +5,7 @@ mode/note must be recorded even when there are no flags. No ledger writes.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,12 @@ class FlagResult:
 
 def _in_scope(bucket: Bucket, cwd: Path, projects: list[Path], entries: Sequence[dict | None]) -> bool:
     if bucket.scope == "project":
+        if os.name == "nt":
+            # Windows: compared through the names interface's key, so case,
+            # slash direction and a long-path prefix make no difference.
+            from . import discovery
+
+            return discovery.in_project_scope(cwd, [p for p in projects if hosts.slug_for(p) == bucket.name])
         paths = [p.resolve() for p in projects if hosts.slug_for(p) == bucket.name]
         return not paths or any(cwd.resolve().is_relative_to(p) for p in paths)
     if bucket.scope == "skill":

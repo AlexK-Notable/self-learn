@@ -53,6 +53,41 @@ jobs:
         working-directory: plugins/self-learn/ui
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
 
+      - name: Windows canon destinations
+        working-directory: plugins/self-learn/cli
+        run: |
+          $env:WIN_PD_OVERRIDE_LOCAL_APPDATA = Join-Path $env:RUNNER_TEMP "canon-local"
+          $env:WIN_PD_OVERRIDE_APPDATA = Join-Path $env:RUNNER_TEMP "canon-roaming"
+          $report = Join-Path $env:RUNNER_TEMP "canon-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_canon.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $native = @(
+            'test_windows_routes_keep_bytes_outside_the_block'
+            'test_windows_retire_and_replace_leave_neighbours'
+            'test_windows_cross_drive_pointer'
+            'test_windows_memory_prune_keeps_index_line_endings'
+            'test_windows_display_labels_use_slashes'
+            'test_windows_project_on_another_drive'
+            'test_windows_rules_paths_refuse_native_globs[backslash]'
+            'test_windows_rules_paths_refuse_native_globs[rooted]'
+            'test_windows_rules_paths_refuse_native_globs[rooted-backslash]'
+            'test_windows_rules_paths_refuse_native_globs[drive]'
+            'test_windows_rules_paths_refuse_native_globs[parent]'
+            'test_windows_rules_target_refuses_native_globs_from_any_source'
+            'test_windows_new_skill_keeps_marketplace_line_endings'
+            'test_windows_labels_outside_the_profile_and_config_dir'
+            'test_windows_route_dry_run_reference_diff_matches_the_write'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $missing = @($native | Where-Object { $ran -cnotcontains $_ })
+          if ($missing.Count -or $ran.Count -ne 28 -or $skips.Count -ne 1 -or
+              $skips[0].name -cne 'test_posix_compile_writes_the_compiler_text' -or
+              $skips[0].skipped.message -cne 'POSIX canon contract') {
+            throw "Unexpected canon test selection: ran $($ran -join ', '); missing $($missing -join ', '); skipped $($skips.Count)"
+          }
+
       - name: Native capture integration
         working-directory: plugins/self-learn/cli
         run: |
@@ -86,6 +121,12 @@ jobs:
             'test_git_tree_keys_and_literal_pathspec_with_unrelated_index_entry'
             'test_existing_buckets_roundtrip_without_rekey'
             'test_init_repairs_local_config_before_recovery'
+            'test_init_bootstraps_empty_repository[git-init]'
+            'test_init_bootstraps_empty_repository[empty-clone]'
+            'test_init_finds_original_subject_in_clone'
+            'test_init_reports_failed_config_rollback'
+            'test_statement_failure_preserves_committed_receipt[symlink]'
+            'test_statement_failure_preserves_committed_receipt[malformed]'
           )
           foreach ($version in '3.12', '3.13') {
             if ($version -eq '3.13') {
@@ -359,6 +400,268 @@ jobs:
             throw "Windows supervisor test selection changed: ran $ran; skipped $($skips.Count)"
           }
 
+      - name: Windows child containment contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "containment-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_procs_contain.py -p no:cacheprovider -q -rsP --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "Linux process contract" })
+          $expected = @(
+            'test_windows_grandchild_outlives_child_without_containment'
+            'test_windows_contain_then_terminate_kills_child_and_grandchild'
+            'test_windows_dropping_the_handle_kills_the_child'
+            'test_windows_early_grandchild_race_is_closed_by_adoption'
+            'test_windows_early_grandchild_race_measured'
+            'test_windows_orphaned_great_grandchild_is_the_uncovered_gap'
+            'test_windows_stale_snapshot_row_never_puts_an_unrelated_process_in_the_job'
+            'test_windows_adoption_requires_a_strictly_younger_child[older]'
+            'test_windows_adoption_requires_a_strictly_younger_child[tie]'
+            'test_windows_breakaway_after_assignment_is_never_recaptured'
+            'test_windows_child_spawned_during_assignment_is_adopted'
+            'test_windows_sweep_failures_are_reported_not_raised[snapshot]'
+            'test_windows_sweep_failures_are_reported_not_raised[refusal]'
+            'test_windows_sweep_failures_are_reported_not_raised[passes]'
+            'test_windows_sweep_failures_are_reported_not_raised[close-after-failed-walk]'
+            'test_windows_sweep_failures_are_reported_not_raised[close-only]'
+            'test_windows_sweep_failures_are_reported_not_raised[parent-query]'
+            'test_windows_interrupted_containment_hands_the_job_over'
+            'test_windows_interrupted_containment_publishes_its_owner[translated]'
+            'test_windows_interrupted_containment_publishes_its_owner[after-adoption]'
+            'test_windows_abrupt_death_of_the_container[none]'
+            'test_windows_abrupt_death_of_the_container[child]'
+            'test_windows_abrupt_death_of_the_container[self]'
+            'test_windows_contained_self_keeps_its_exit_status[exit]'
+            'test_windows_contained_self_keeps_its_exit_status[finalize]'
+            'test_windows_self_assignment_interrupted_keeps_the_job'
+            'test_windows_breakaway_from_the_self_job_before_containment_is_left_out'
+            'test_windows_identity_tells_a_reused_pid_apart'
+            'test_windows_filetime_conversion_keeps_both_words'
+            'test_windows_identity_keeps_the_full_creation_time'
+            'test_windows_identity_predates_boot'
+            'test_windows_identity_and_contain_of_missing_or_exited_pid'
+            'test_windows_identity_open_errors[ERROR_ACCESS_DENIED-None]'
+            'test_windows_identity_open_errors[ERROR_INVALID_HANDLE-OSError]'
+            'test_windows_identity_errors_carry_winerror_and_cause[_get_process_times-ERROR_INVALID_HANDLE]'
+            'test_windows_identity_errors_carry_winerror_and_cause[_query_image-ERROR_INSUFFICIENT_BUFFER]'
+            'test_windows_contain_child_already_in_a_job'
+            'test_windows_refused_assignment_surfaces_winerror_and_kills_nothing'
+            'test_windows_refused_self_assignment_releases_the_job'
+            'test_windows_terminate_is_bounded[count]'
+            'test_windows_terminate_is_bounded[handle]'
+            'test_windows_terminate_cleanup_error_surfaces'
+            'test_windows_job_flags_allow_breakaway_and_kill_on_close'
+            'test_identities_compare_and_hash_by_value'
+          )
+          $delta = Compare-Object $expected @($ran | ForEach-Object { $_.name })
+          if ($delta -or $unexpected.Count -or $skips.Count -ne 20) {
+            throw "Windows containment test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
+          }
+
+      - name: Windows transcript discovery contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "transcript-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_transcripts.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_windows_root_follows_claude_root_and_keeps_one_spelling'
+            'test_windows_walk_chooses_files_by_content_not_folder'
+            'test_windows_walk_reads_crlf_non_ascii_while_appended'
+            'test_windows_session_copy_proves_session_and_working_directory'
+            'test_windows_session_copy_follows_no_link'
+            'test_windows_project_scope_compares_like_registered_projects'
+            'test_windows_named_and_backfill_sessions_are_chosen_by_content'
+            'test_windows_later_session_search_follows_recorded_working_directory'
+            'test_windows_origin_index_reads_no_linked_log[ordinary]'
+            'test_windows_origin_index_reads_no_linked_log[linked-folder]'
+            'test_windows_origin_index_reads_no_linked_log[linked-file]'
+            'test_windows_origin_index_reads_no_linked_log[linked-session-folder]'
+            'test_windows_origin_index_reads_no_linked_log[linked-subagents-folder]'
+            'test_windows_origin_index_reads_no_linked_log[linked-agent-file]'
+            'test_windows_origin_index_reads_no_linked_log[dot-dot]'
+            'test_windows_spine_lists_no_linked_subagent_log[ordinary]'
+            'test_windows_spine_lists_no_linked_subagent_log[linked-session-folder]'
+            'test_windows_spine_lists_no_linked_subagent_log[linked-subagents-folder]'
+            'test_windows_spine_lists_no_linked_subagent_log[linked-agent-file]'
+            'test_windows_proof_survives_damaged_rows[invalid-utf8]'
+            'test_windows_proof_survives_damaged_rows[deep-nesting]'
+            'test_windows_later_session_search_reads_unchanged_files_once'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if (!$ran.Count -or (Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 1 -or
+              $skips[0].name -cne 'test_linux_discovery_keeps_the_folder_listing_and_trusts_names' -or
+              $skips[0].skipped.message -cne 'Linux transcript discovery') {
+            throw "Unexpected transcript test selection or skip: $ran"
+          }
+
+      - name: Windows hook rule evaluator
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "hook-rules.xml"
+          uv run --no-sync python -m pytest tests/test_hook_rules.py -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $allowed = @(
+            "Linux differential: compares against the generated Bash script"
+            "Linux only: reads the Linux test modules the fixtures come from"
+          )
+          $unexpected = @($skips | Where-Object { $allowed -cnotcontains $_.skipped.message })
+          if ($ran.Count -ne 323 -or $skips.Count -ne 208 -or $unexpected.Count -ne 0) {
+            throw "Expected 323 executed hook-rule tests and 208 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          }
+
+      - name: Windows cancel and probe contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "cancel-probe-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_cancel_probes.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_stop_files_are_named_by_pid_and_creation_under_the_runtime_root'
+            'test_windows_ask_stops_on_request_stop_and_leaves_no_stop_file'
+            'test_windows_summarise_stops_on_request_stop_and_leaves_no_stop_file'
+            'test_windows_ctrl_break_stops_summarise'
+            'test_windows_stale_stop_file_is_ignored_and_cleared'
+            'test_windows_request_before_the_watch_is_honoured'
+            'test_windows_request_stop_reaches_another_process'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[systemd-show]'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[package]'
+            'test_windows_linux_only_probe_is_unavailable_and_runs_nothing[git-file]'
+            'test_windows_platform_unavailable_rows_are_never_broken'
+            'test_windows_mount_table_reads_no_linux_path'
+            'test_windows_ask_schema_omits_probe_and_keeps_every_other_tool'
+            'test_windows_ask_honours_a_request_made_before_the_watch'
+            'test_windows_ctrl_break_stops_ask'
+            'test_windows_ask_catches_a_stop_delivered_while_the_watch_starts'
+            'test_windows_ask_catches_a_stop_racing_the_end_of_the_turn'
+            'test_windows_request_to_a_launcher_before_the_watch_is_honoured_once'
+            'test_windows_a_watch_interrupted_while_starting_is_undone'
+            'test_windows_a_watch_interrupted_while_closing_is_still_undone'
+            'test_windows_request_passes_over_a_process_it_cannot_read'
+            'test_windows_request_does_not_follow_a_reused_parent_pid'
+            'test_windows_ancestor_walk_stops_at_a_younger_parent'
+            'test_windows_watch_refuses_a_linked_stop_folder_before_touching_it'
+            'test_windows_doctor_premises_reports_platform_probes_and_no_broken'
+          )
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or $skips.Count -ne 4 -or
+              @($skips | Where-Object { $_.skipped.message -cne "Linux cancel contract" }).Count) {
+            throw "Windows cancel test selection changed: ran $ran, skipped $($skips.Count)"
+          }
+
+      - name: Windows skill script contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "skill-script-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_skill_scripts.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $expected = @(
+            'test_windows_lifecycle_python_and_bash[git-bash]'
+            'test_windows_lifecycle_python_and_bash[no-git-bash]'
+            'test_windows_runs_a_private_snapshot_of_the_verified_bytes'
+            'test_windows_interpreter_settings_are_not_inherited'
+            'test_windows_stdin_only_on_request'
+            'test_windows_changed_copy_is_refused'
+            'test_windows_restored_index_cannot_revive_a_deactivation'
+            'test_windows_junction_in_place_of_scripts_folder_is_refused'
+            'test_windows_redirect_above_the_skill_folder[same-bytes]'
+            'test_windows_redirect_above_the_skill_folder[changed-bytes]'
+            'test_windows_cross_volume_quarantine_moves_the_entry_never_its_contents'
+            'test_windows_crlf_digest_contract'
+            'test_windows_converted_line_endings_are_refused'
+            'test_windows_show_reads_exact_bytes_from_a_checked_path'
+            'test_windows_list_survives_an_unavailable_host'
+            'test_windows_device_names_and_timeouts_are_refused'
+            'test_windows_production_defaults_refuse_run'
+            'test_windows_git_bash_discovery'
+          )
+          $posix = @('test_linux_surface_has_no_windows_launcher', 'test_linux_checkout_mode_decides_the_mode_check')
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          if ((Compare-Object -CaseSensitive $expected $ran) -or (Compare-Object -CaseSensitive $posix @($skips | ForEach-Object { $_.name })) -or
+              @($skips | Where-Object { $_.skipped.message -cne 'Linux skill script surface' }).Count) {
+            throw "Windows skill script test selection changed: $ran"
+          }
+
+      - name: Windows SDK child lifecycle contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "sdk-lifecycle-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_sdk_lifecycle.py -p no:cacheprovider -q -rsP --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "Linux SDK lifecycle contract" })
+          $expected = @(
+            'test_windows_backend_registers_the_procs_calls_on_import'
+            'test_windows_sidecar_round_trips_both_identities'
+            'test_windows_last_rung_ends_the_grandchild_after_the_sdk_ended_the_child'
+            'test_windows_session_contains_the_child_and_teardown_kills_both'
+            'test_windows_failed_handshake_still_ends_the_childs_job'
+            'test_windows_a_substituted_client_is_never_contained'
+            'test_windows_containment_trouble_never_fails_the_session[contain-raises]'
+            'test_windows_containment_trouble_never_fails_the_session[contain-interrupted]'
+            'test_windows_containment_trouble_never_fails_the_session[terminate-times-out]'
+            'test_windows_containment_trouble_never_fails_the_session[self-refused]'
+            'test_windows_a_failing_logger_never_costs_the_answer[unresolved-pid]'
+            'test_windows_a_failing_logger_never_costs_the_answer[contained]'
+            'test_windows_sidecar_write_and_delete_denial_never_cost_the_answer'
+            'test_windows_a_failing_sweep_never_stops_the_session'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[leftover]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[sdk-chose]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[sdk-chose-com]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[relative-cli]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[reused-pid]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[reused-at-assignment]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[predates-boot]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[not-claude]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[not-claude-no-cli]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[claude-elsewhere]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[no-identity]'
+            'test_windows_orphan_sweep_kills_only_a_true_leftover[malformed-program]'
+            'test_windows_orphan_sweep_leaves_a_live_owners_child_alone[another-live-process]'
+            'test_windows_orphan_sweep_leaves_a_live_owners_child_alone[this-process]'
+            'test_windows_orphan_sweep_declines_a_sidecar_that_is_not_stale'
+            'test_windows_orphan_sweep_keeps_the_record_when_the_kill_is_not_confirmed'
+            'test_windows_orphan_sweep_ends_a_job_an_interruption_carries'
+            'test_windows_session_end_ends_a_job_an_interruption_carries'
+            'test_windows_session_end_leaves_a_pid_that_is_no_longer_the_child'
+            'test_windows_abrupt_death_of_self_learn_leaves_no_survivor[contained]'
+            'test_windows_abrupt_death_of_self_learn_leaves_no_survivor[self-only]'
+            'test_windows_abrupt_death_of_self_learn_leaves_no_survivor[child-only]'
+            'test_windows_abrupt_death_of_self_learn_leaves_no_survivor[uncontained]'
+            'test_windows_a_second_command_leaves_the_first_commands_session_alone'
+            'test_windows_cli_search_refuses_a_cmd_shim_and_finds_the_exe'
+            'test_windows_cli_search_never_looks_in_the_current_folder'
+            'test_windows_cli_search_skips_network_folders_and_an_unresolvable_home'
+            'test_windows_cli_search_refuses_a_path_through_a_batch_named_folder'
+            'test_windows_doctor_names_the_program_or_why_there_is_none'
+            'test_windows_doctor_never_runs_a_batch_shim[explicit]'
+            'test_windows_doctor_never_runs_a_batch_shim[opt-out]'
+            'test_windows_doctor_never_runs_a_batch_shim[control-exe]'
+            'test_windows_bundled_claude_exe_answers_version'
+            'test_windows_sessions_run_on_the_proactor_event_loop'
+            'test_batch_rule_matches_the_sdks_own'
+            'test_concurrent_first_self_job_attempts_are_serialized'
+            'test_a_handle_less_session_never_takes_another_sessions_job'
+          )
+          $delta = Compare-Object $expected @($ran | ForEach-Object { $_.name })
+          if ($delta -or $unexpected.Count -or $skips.Count -ne 2) {
+            throw "Windows SDK lifecycle test selection changed: ran $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count) $($delta | Out-String)"
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(
@@ -431,6 +734,27 @@ jobs:
       - name: CLI test collection check
         working-directory: plugins/self-learn/cli
         run: uv run --no-sync pytest --collect-only -q tests/
+
+      # The hook rule evaluator against the real generated Bash scripts, jq,
+      # grep and awk (lane 5R). Required: a drift between the evaluator and
+      # the scripts must stop a landing, so no test may skip here.
+      - name: Hook rule evaluator against the generated scripts
+        working-directory: plugins/self-learn/cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq gawk locales
+          if ! locale -a | grep -qix 'en_US.utf8'; then sudo locale-gen en_US.UTF-8; fi
+          jq --version; grep --version | head -1; locale -a
+          report="${RUNNER_TEMP}/hook-rules-linux.xml"
+          uv run --no-sync pytest tests/test_hook_rules.py -p no:cacheprovider -q -rA --junitxml="$report"
+          uv run --no-sync python -c '
+          import sys, xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          print(f"{len(cases)} hook-rule tests, {len(skipped)} skipped")
+          if len(cases) != 531 or skipped:
+              sys.exit(f"expected 531 hook-rule tests and no skips; skipped: {skipped[:20]}")
+          ' "$report"
 
   linux-suite:
     runs-on: ubuntu-latest

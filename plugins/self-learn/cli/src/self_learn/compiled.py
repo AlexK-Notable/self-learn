@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -220,6 +221,8 @@ def region_key(host_path: Path | str, target: Path, region: str = "managed") -> 
         base = names.relative_key(Path(host_path).resolve(), resolved_target)
     except ValueError:
         base = str(Path(target).resolve())
+        if os.name == "nt":  # `D:/notes/shelf.md`, slashes as the relative keys
+            base = Path(target).resolve().as_posix()
     return base + _KEY_SUFFIX.get(region, "")
 
 

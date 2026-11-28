@@ -346,6 +346,22 @@ OUT_OF_RANGE = "out-of-range"
 #: problem, not a disk that is away).
 CAUSE_MOUNT_ABSENT = "mount-absent"
 CAUSE_MOUNT_UNKNOWN = "mount-unknown"
+#: ``platform``: the probe kind cannot run on this operating system at all
+#: (:data:`WINDOWS_UNAVAILABLE` on Windows). Never broken: no fix to the
+#: probe or the machine would make it answer (parity plan 6C).
+CAUSE_PLATFORM = "platform"
+#: The probe kinds that read Linux-only facts, and why each one cannot
+#: answer on Windows. They are ``unavailable`` there (cause
+#: :data:`CAUSE_PLATFORM`) before any command runs: a ``pacman.exe`` that
+#: an MSYS2 install puts on PATH must not answer for this machine.
+#: ``git-file`` is here because its argv gate takes POSIX repository paths
+#: only (:func:`_git_shape_ok`).
+WINDOWS_UNAVAILABLE = {
+    "systemd-show": "unavailable on Windows: systemd-show reads systemd, which Windows does not have",
+    "package": "unavailable on Windows: package asks pacman, which does not manage Windows",
+    "git-file": "unavailable on Windows: git-file probes take POSIX repository paths only",
+}
+__all__ += ["CAUSE_PLATFORM", "WINDOWS_UNAVAILABLE"]
 
 _PREMISE_KEYS = (
     "id", "claim", "probe", "holds_if", "match", "on_change", "source",
@@ -1280,6 +1296,9 @@ def read_mount_table(
     never a write, so the "never acts on the system" rule holds. Total:
     an unreadable piece is left empty (``readable`` false for the live
     table), never an exception."""
+    if os.name == "nt":
+        # Windows has no mount table; a C:\proc or C:\etc folder is not one.
+        return MountTable(current={}, declared=frozenset(), readable=False)
     current: dict[str, str] = {}
     text = _read_text(mountinfo)
     readable = text is not None
@@ -2322,6 +2341,8 @@ def run_probe(probe: Mapping, env: ProbeEnv, *, premise: Mapping | None = None) 
     at = env.now()
     kind = str(probe["kind"])
     executor = _EXECUTORS[kind]
+    if os.name == "nt" and kind in WINDOWS_UNAVAILABLE:
+        return unavailable_observation(WINDOWS_UNAVAILABLE[kind], observed_at=at, cause=CAUSE_PLATFORM)
     try:
         if kind in _IN_PROCESS_KINDS:
             raw = _call_bounded(executor, probe, env)

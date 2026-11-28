@@ -533,10 +533,20 @@ def _term_raises() -> Iterator[None]:
     if installed:
         previous = signal.signal(signal.SIGTERM, _on_term)
     try:
+        if installed and os.name == "nt":
+            # Windows: a stop file or Ctrl+Break runs the same handler
+            # (`stop_request`); it ends with the block.
+            from . import stop_request
+
+            stop_request.watch(_on_term)
         yield
     finally:
         if installed:
             signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+            if os.name == "nt":
+                from . import stop_request
+
+                stop_request.unwatch()
 
 
 def run_summarise(home: Path, target: str, *, again: bool = False, stream: bool = False,

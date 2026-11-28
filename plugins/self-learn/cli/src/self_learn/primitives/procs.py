@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 
 
 class BoundedTimeout(subprocess.TimeoutExpired):
@@ -110,3 +111,125 @@ def run_command(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedP
 
 def pid_alive(pid: int) -> bool:
     return _backend().pid_alive(pid)
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """Enough to tell, later, whether a PID still names the same process.
+
+    Compare two identities with ``==``; never compare PIDs alone.
+
+    ``image``: the program. POSIX: the first NUL-separated field of
+    ``/proc/<pid>/cmdline`` decoded as UTF-8 with ``"replace"`` (exactly
+    what ``sdksession/children.py`` reads today). Windows: the full image
+    path from ``QueryFullProcessImageNameW``.
+
+    ``created``: Windows: the creation time from ``GetProcessTimes`` as the
+    raw FILETIME, 100-nanosecond ticks since 1601-01-01 UTC, read without
+    pywin32 (whose conversion rounds to the millisecond). POSIX: ``None``
+    (today's check reads no start time).
+
+    Accepted limitation: the creation time is wall-clock time. Windows does
+    not promise successive processes distinct or increasing stamps, so two
+    processes with the same PID, image and creation time compare equal, and a
+    clock set back can make a later process look older than an earlier one.
+    No boot-scoped process sequence number is available to settle it. Rule
+    for callers: a saved identity is trusted only if
+    :func:`identity_predates_boot` is false for it; an identity from before
+    the current boot is never used to decide a kill.
+
+    ``cmdline``: POSIX: the raw ``/proc/<pid>/cmdline`` bytes, so a caller
+    can keep today's exact parsing. Windows: ``None``.
+    """
+
+    image: str
+    created: int | None
+    cmdline: bytes | None = None
+
+
+def process_identity(pid: int) -> ProcessIdentity | None:
+    """The identity of *pid*, or ``None`` when no such process can be read
+    (POSIX: the ``/proc`` read raised ``OSError``; Windows: the PID does not
+    exist, the process cannot be opened for limited query, or it has
+    exited). See :class:`ProcessIdentity` for what equality can and cannot
+    prove, and :func:`identity_predates_boot` for when a saved identity may
+    be trusted."""
+    return _backend().process_identity(pid)
+
+
+def identity_predates_boot(identity: ProcessIdentity) -> bool:
+    """Whether *identity* was created before the current boot (Windows: its
+    creation time is no later than boot time plus one second, boot time being
+    the precise clock minus the uptime counter). Such an identity cannot be
+    trusted: its PID, image and creation time can all recur after a reboot or
+    a clock change. POSIX: always false (no creation time is recorded)."""
+    return _backend().identity_predates_boot(identity)
+
+
+def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Any:
+    """Contain an already-running child that someone else spawned.
+
+    Windows: assign *pid* to a fresh kill-on-close job object (breakaway
+    allowed, as a new session escapes ``killpg`` on POSIX), then adopt its
+    descendants that were spawned before the assignment and can be proved
+    to be its own (what the sweep sees and rejects is reported in the
+    handle's ``left_out`` and ``uncovered``; an empty report does not prove
+    every descendant was found). The returned handle keeps the job alive: dropping it,
+    or this process dying, kills everything in the job. ``None`` when the
+    process does not exist or has exited, or when *expect* is given and the
+    process opened is not that identity (checked on the same open handle
+    that is then assigned). If the call is interrupted after the child may be
+    in the job, the exception that leaves this call carries the handle as
+    ``contained_child`` (holding every member adopted so far); terminate it
+    or keep it.
+
+    Accepted limitations, and the caller rules that go with them. (1) A
+    child started with ``CREATE_BREAKAWAY_FROM_JOB`` before the assignment,
+    or while the assignment call runs, can be indistinguishable from an
+    ordinary child and is then adopted and killed with the rest. So contain
+    only the SDK's Claude Code child, never a process tree in which
+    self-learn itself launched detached work. (2) Parentage is proved by
+    creation times (see :class:`ProcessIdentity`); a clock set back can make
+    an unrelated process look like a child. Pass *expect* only with an
+    identity for which :func:`identity_predates_boot` is false.
+
+    POSIX: returns a handle carrying *pid*, reading nothing but our own PID
+    and process group (plus ``/proc`` when *expect* is given); the process
+    group of *pid* is read with ``os.getpgid`` at kill time, exactly as
+    ``sdksession/teardown.kill_child`` does today. ``None`` for a PID that
+    is not positive, is this process, or is this process's group leader.
+    """
+    return _backend().contain_child(pid, expect=expect)
+
+
+def terminate_contained(handle: Any) -> None:
+    """Kill what *handle* contains.
+
+    Windows: terminate the job, wait (bounded) until it is empty, then
+    release it; acts on the job handle, never on a PID. Raises
+    :class:`TimeoutError` if the job is still not empty at the bound.
+    Calling it again is a no-op.
+
+    POSIX: the ``getpgid``/``killpg``/``SIGKILL`` body of
+    ``sdksession/teardown.kill_child``, copied exactly, swallowing the same
+    ``ProcessLookupError`` and ``PermissionError``; a ``None`` handle or one
+    whose PID ``contain_child`` would refuse does nothing.
+    """
+    _backend().terminate_contained(handle)
+
+
+def contain_self() -> bool:
+    """Make this process's descendants die with it, whatever kills it.
+
+    Windows: put this process in a kill-on-close job with breakaway
+    allowed (a child started with ``CREATE_BREAKAWAY_FROM_JOB`` still
+    escapes). Call it at start-up, before anything spawns: children started
+    earlier stay outside the job. Nests under a job the process is already
+    in. The job handle is never closed by Python, so a normal exit keeps its
+    exit status; the kernel closes it after the process ends. Safe to call
+    again: later calls return ``True`` without a new job. Returns ``True``.
+
+    POSIX: does nothing and returns ``False`` (descendants are handled by
+    process groups there).
+    """
+    return _backend().contain_self()

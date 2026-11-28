@@ -226,6 +226,54 @@ class CompileError(Exception):
     """A compile target violates the managed-section / references contract."""
 
 
+# ------------------------------------------------- line endings (Windows only)
+
+#: One physical line of a file's own text with its terminator, in the
+#: terms `Path.read_text`'s universal newlines read it: ``\r\n``, a lone
+#: ``\r`` or ``\n`` each end a line; the last line may have none.
+_RAW_LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
+_LF_LINE_RE = re.compile(r"[^\n]*\n|[^\n]+\Z")
+
+
+def keep_line_endings(path: Path, text: str) -> str:
+    """*text* -- the new content a compiler made from *path*'s
+    ``read_text`` (every line ending read as ``\\n``) -- spelled with the
+    file's own line endings, for a Windows write. Called only when
+    ``os.name == "nt"``; a POSIX write keeps the compiler's text as it is.
+
+    Every line before the first and after the last line the write changes
+    keeps its bytes exactly, terminator included, so a CRLF file stays
+    CRLF outside the managed region byte for byte and a mixed file keeps
+    each such line as it was. The changed lines take the file's own
+    convention: CRLF when the file holds more CRLF than bare LF endings
+    (a tie with at least one CRLF counts as CRLF), else LF. A missing or
+    empty file, and one with no line ending at all, gets LF. Reading
+    *text* back with universal newlines always gives *text* again."""
+    try:
+        raw = path.read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return text
+    old = _RAW_LINE_RE.findall(raw)
+    old_read = [line.rstrip("\r\n") + "\n" if line.endswith(("\r", "\n")) else line for line in old]
+    new = _LF_LINE_RE.findall(text)
+    head = 0
+    while head < min(len(old), len(new)) and old_read[head] == new[head]:
+        head += 1
+    tail = 0
+    while (tail < min(len(old), len(new)) - head
+           and old_read[len(old) - 1 - tail] == new[len(new) - 1 - tail]):
+        tail += 1
+    crlf = raw.count("\r\n")
+    eol = "\r\n" if crlf and crlf >= raw.count("\n") - crlf else "\n"
+    changed = [line[:-1] + eol if line.endswith("\n") else line for line in new[head:len(new) - tail]]
+    lines = old[:head] + changed + old[len(old) - tail:]
+    for i in range(len(lines) - 1):
+        if lines[i].endswith("\r") and lines[i + 1].startswith("\n"):
+            # A lone CR now followed by LF would read as one CRLF ending.
+            lines[i] = lines[i][:-1] + eol
+    return "".join(lines)
+
+
 # --------------------------------------------------------------------- results
 
 
@@ -469,6 +517,10 @@ def compile_managed_file(
         # -- follow_symlinks=True, matching the read side's own tolerance
         # (surface_names_target compares resolve() to resolve()) and
         # install.sh's own practice of symlinking skills into place.
+        if os.name == "nt":  # the file keeps its own line endings
+            fsops.atomic_write(path, keep_line_endings(path, result.text), preserve_mode=True,
+                               fsync=True, follow_symlinks=True)
+            return result
         fsops.atomic_write(path, result.text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return result
 
@@ -917,6 +969,8 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
     if changed:
         # Sprint 3 M-I wave 3 (D6): host canon, same reasoning as
         # compile_managed_file above -- follow_symlinks=True.
+        if os.name == "nt":  # the file keeps its own line endings
+            new_text = keep_line_endings(path, new_text)
         fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return PathsResult(
         path=path, paths=u, changed=changed, unpathed_by=unpathed,
@@ -1004,7 +1058,13 @@ def pointer_token(surface: Path, target: Path) -> str:
     being committed, shared, and cloned onto another machine. A relative
     form that would escape upward falls back to a ``~``-relative token
     when the target is under ``$HOME`` (still no absolute personal-path
-    leak), else the bare absolute path."""
+    leak), else the bare absolute path.
+
+    On Windows the token is written with forward slashes in every form:
+    across drives (no relative form exists) and outside the profile, the
+    absolute fallback reads ``D:/proj/references/LEARNINGS.md``."""
+    if os.name == "nt":
+        return Path(names.pointer_token(surface, target)).as_posix()
     return names.pointer_token(surface, target)
 
 
@@ -1188,6 +1248,11 @@ def apply_pointer(
     line = pointer_line(token, label)
     original_text = surface.read_text(encoding="utf-8")
     new_text, bootstrapped = compile_pointer_text(original_text, line, names_base=names_base)
+    if os.name == "nt":
+        # The file keeps its own line endings; the restore below then puts
+        # back its exact original text.
+        original_text = keep_line_endings(surface, original_text)
+        new_text = keep_line_endings(surface, new_text)
     # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True. Each
     # of this function's writes (this one, and the create-empty and
     # revert legs) is its own atomic replace: a crash between any two of
@@ -1392,6 +1457,8 @@ def compile_reference(
 
     block = _reference_block(record, on=on)
     new_text = text.rstrip("\n") + "\n\n" + block + "\n"
+    if os.name == "nt":  # the file keeps its own line endings
+        new_text = keep_line_endings(path, new_text)
     fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return ReferenceResult(path=path, applied=True, created=created, entry=block)
 
@@ -1470,6 +1537,8 @@ def retire_reference(
     if removed is None:
         return ReferenceResult(path=path, applied=False, created=False, entry=None)
     # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+    if os.name == "nt":  # the file keeps its own line endings
+        new_text = keep_line_endings(path, new_text)
     fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return ReferenceResult(path=path, applied=True, created=False, entry=removed)
 
@@ -1619,7 +1688,13 @@ def retire_empty_shelf(shelf: Path, surface: Path | None, plan: EmptyShelf) -> N
     :func:`retire_reference`'s; a shelf that goes is deleted outright, never
     rewritten first. Writes nothing for a shelf that is not empty. Commits
     nothing; the caller holds the host lock."""
-    if plan.surface_changed and surface is not None and plan.surface_text is not None:
+    if os.name == "nt" and plan.surface_changed and surface is not None and plan.surface_text is not None:
+        # The surface keeps its own line endings.
+        fsops.atomic_write(
+            surface, keep_line_endings(surface, plan.surface_text), preserve_mode=True,
+            fsync=True, follow_symlinks=True,
+        )
+    elif plan.surface_changed and surface is not None and plan.surface_text is not None:
         fsops.atomic_write(
             surface, plan.surface_text, preserve_mode=True, fsync=True, follow_symlinks=True
         )

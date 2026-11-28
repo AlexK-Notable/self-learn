@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -397,7 +398,16 @@ class CheckTools:
         family = _family(str(item.get("project_dir") or own.parent.name))
         rarest = max(terms, key=len).encode("utf-8")
         files: list[Path] = []
-        if self.root.is_dir():
+        if os.name == "nt":
+            # Windows: a folder's name proves nothing there (two working
+            # directories can share one); the files are chosen by the working
+            # directory each records, and `skip_prefix` is then the comparison
+            # key of self-learn's cache root (miner._own_folders_prefix).
+            from . import discovery
+
+            files = discovery.later_session_files(self.root, item, after_epoch=after_epoch,
+                                                  all_folders=all_folders, own_key=self.skip_prefix)
+        elif self.root.is_dir():
             for d in self.root.iterdir():
                 if not d.is_dir():
                     continue
