@@ -593,7 +593,7 @@ def _installed_cli_path() -> tuple[str | None, str]:
 
     `(None, "")` when there is none.
 
-    S-NEXT-w6-sdk, Windows: :func:`_installed_cli_path_windows` instead,
+    S-180, Windows: :func:`_installed_cli_path_windows` instead,
     which only ever answers a native ``claude.exe`` (never a ``.cmd`` or
     ``.bat`` shim) and, when it finds none, says why in the second field."""
     if os.name == "nt":
@@ -607,7 +607,7 @@ def _installed_cli_path() -> tuple[str | None, str]:
     return None, ""
 
 
-# S-NEXT-w6-sdk: the Windows installed-CLI search. MIRRORED from
+# S-180: the Windows installed-CLI search. MIRRORED from
 # `claude_agent_sdk/_internal/transport/subprocess_cli.py` at 0.2.134
 # (`_find_cli`'s Windows branch, `_is_windows_native_exe`,
 # `_is_windows_batch_cli`), read 2026-11-28: the SDK runs only a native
@@ -813,7 +813,7 @@ def resolve_cli_choice(home: Path | str | None = None) -> CliChoice:
        red. That test is the mutation control for this leg: delete the
        leg and it fails.
 
-    Windows (S-NEXT-w6-sdk): the same order, through
+    Windows (S-180): the same order, through
     :func:`_windows_cli_choice`, whose installed search mirrors the SDK's
     own Windows rule (a native ``claude.exe`` only, never a ``.cmd`` shim
     the SDK would refuse)."""
@@ -895,7 +895,7 @@ def _operative_cli_version(home: Path | str | None = None) -> tuple[str | None, 
     if not cli_path:
         return None, skip_reason or "sdk cli path not resolved"
     if os.name == "nt" and _windows_batch_path(cli_path):
-        # S-NEXT-w6-sdk: whichever rule chose it (an explicit setting, the
+        # S-180: whichever rule chose it (an explicit setting, the
         # opt-out, the sdk's own last-resort hit), the sdk refuses to start a
         # batch script, so the doctor never runs one either.
         return None, f"resolved cli {cli_path} is a .bat/.cmd batch script, which the sdk refuses to run"
