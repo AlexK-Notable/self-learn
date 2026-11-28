@@ -123,6 +123,16 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
     aliases = _launch_imports(tree)
     # Only the backend owns the run-without-timeout exemption.
     exempt_run_timeout = rel in ("primitives/_procs_posix.py", "primitives\\_procs_posix.py")
+    # serve._reexec replaces the service itself with one os.execve call. The
+    # exemption names the enclosing top-level function, never a line number:
+    # an unrelated edit above it must not move the call out of its exemption.
+    reexec_calls = {
+        id(call)
+        for fn in tree.body
+        if Path(rel).as_posix() == "serve.py" and isinstance(fn, ast.FunctionDef) and fn.name == "_reexec"
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call) and ast.unparse(call.func) == "os.execve"
+    }
     hits: list[Violation] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -148,10 +158,7 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         elif _native_launch(node, aliases):
             if Path(rel).as_posix() in {"primitives/_procs_windows.py", "primitives/_procs_posix.py"}:
                 continue
-            # serve._reexec replaces the service itself at this one os.execve site.
-            if (rel, node.lineno, ast.unparse(node)) == (
-                "serve.py", 2371, "os.execve(sys.executable, argv, env)"
-            ):
+            if id(node) in reexec_calls:
                 continue
             hits.append(Violation(rel, node.lineno, "native-launch-outside-backend"))
         elif name == "communicate":
@@ -365,6 +372,20 @@ def test_native_launch_has_one_owner_and_rejects_a_second(tmp_path):
     (tmp_path / "offender.py").write_text("\n".join(source), encoding="utf-8")
     assert scan(tmp_path) == [Violation("offender.py", line, "native-launch-outside-backend")
                               for line in range(2, len(source) + 1)]
+    # The serve exemption follows `_reexec` wherever it sits in the file, and
+    # covers nothing else: not another function, not a nested one, not another
+    # module's `_reexec`.
+    (tmp_path / "offender.py").unlink()
+    body = "def _reexec(argv, env):\n    os.execve(sys.executable, argv, env)\n"
+    other = "def elsewhere(argv, env):\n    os.execve(sys.executable, argv, env)\n"
+    nested = "def outer():\n    def _reexec(argv, env):\n        os.execve(sys.executable, argv, env)\n"
+    (tmp_path / "serve.py").write_text("import os, sys\n\n\n\n" + body + other + nested, encoding="utf-8")
+    (tmp_path / "other.py").write_text("import os, sys\n" + body, encoding="utf-8")
+    assert scan(tmp_path) == [
+        Violation("other.py", 3, "native-launch-outside-backend"),
+        Violation("serve.py", 8, "native-launch-outside-backend"),
+        Violation("serve.py", 11, "native-launch-outside-backend"),
+    ]
 
 
 def test_positive_control_census_count_changes_when_a_new_site_lands(tmp_path):
