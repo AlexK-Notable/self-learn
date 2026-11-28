@@ -166,7 +166,7 @@ def audit(event, args):
     if event == 'subprocess.Popen':
         # Windows supplies a command line when lpApplicationName is NULL.
         import win32api
-        observe(args[0] or win32api.CommandLineToArgvW(args[1])[0])
+        observe(args[0] or win32api.CommandLineToArgv(args[1])[0])
 win32process.CreateProcess = create
 sys.addaudithook(audit)
 """
