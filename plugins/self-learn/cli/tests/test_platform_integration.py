@@ -203,12 +203,14 @@ def test_component_rejects_invalid_actor_without_creating_spool(home, monkeypatc
     spool = telemetry.spool_event("offer-made")
     assert spool.parent == names.home_cache() / "spool"
     assert json.loads(spool.read_bytes())["actor"] == "capture-test"
-    before = {p: p.read_bytes() for p in spool.parent.rglob("*") if p.is_file()}
+    outside = spool.parent.parent / "guard"
+    outside.write_bytes(b"outside spool")
+    before = {p: p.read_bytes() for p in spool.parent.parent.rglob("*") if p.is_file()}
     for invalid in ("../nested/actor", "CON"):
         monkeypatch.setenv("SELF_LEARN_ACTOR", invalid)
         with pytest.raises(telemetry.TelemetryError):
             telemetry.spool_event("offer-made")
-    assert {p: p.read_bytes() for p in spool.parent.rglob("*") if p.is_file()} == before
+    assert {p: p.read_bytes() for p in spool.parent.parent.rglob("*") if p.is_file()} == before
 
 
 @windows

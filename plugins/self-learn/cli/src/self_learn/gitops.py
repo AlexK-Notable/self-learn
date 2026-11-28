@@ -537,6 +537,11 @@ def host_lock_path(path: Path, mode: str) -> Path:
 
         app_root = names.cache_root()
         slug = slug_for(path)
+        if os.name == "nt":
+            from .primitives._capture_windows import checked_path
+
+            metadata = checked_path(app_root, app_root / f"host-{slug}.commit.lock")
+            checked_path(app_root, metadata.with_name(metadata.name + ".lck"))
         return app_root / f"host-{slug}.commit.lock"
     raise GitOpsError(f"unknown host mode {mode!r} — expected 'git' or 'plain'")
 

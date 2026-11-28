@@ -71,6 +71,10 @@ def minimum_arguments(parser):
 
 @windows
 def test_refusal_profile_precedes_dispatch(tmp_path, monkeypatch, capsys):
+    for key, value in scratch_env(tmp_path).items():
+        if os.environ.get(key) != value:
+            monkeypatch.setenv(key, value)
+
     def forbidden(*args, **kwargs):
         pytest.fail("refusal reached watchdog, provider, child process or selfcheck")
 
@@ -146,13 +150,17 @@ def test_linux_teach_never_imports_capabilities(tmp_path):
 import os, sys
 from pathlib import Path
 from self_learn.cli import main
-from self_learn import gitops, ledger
+from self_learn import gitops, hosts, intents, ledger
 from unittest.mock import patch
 with patch.object(gitops, '_git', wraps=gitops._git) as commands:
     assert main(['init']) == 0
     assert main(['init']) == 0
     assert all('config' not in call.args[1:] for call in commands.call_args_list)
 assert ledger.resolve_home() == Path(os.environ['SELF_LEARN_HOME'])
+with patch.object(hosts, '_host_add') as add, patch.object(intents, 'ledger_write') as lock:
+    assert hosts.host_add(ledger.resolve_home(), 'target', 'project', mode='plain') is add.return_value
+    add.assert_called_once_with(ledger.resolve_home(), 'target', 'project', init=False, mode='plain', note=None)
+    lock.assert_not_called()
 assert main(['teach','--user','--no-push','--fact','synthetic capture']) == 0
 assert 'self_learn.primitives.capabilities' not in sys.modules
 assert 'self_learn.primitives._capture_windows' not in sys.modules

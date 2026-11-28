@@ -781,6 +781,11 @@ def host_add(
     From an agent's shell it runs only with an authority in force
     (:func:`attribution.refuse_unless_authorized`; S-109)."""
     attribution.refuse_unless_authorized("host add", HostModeAgentRefusal)
+    if os.name == "nt":
+        # Take the lock before the registry read that supplies the new contents.
+        with intents.ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            return _host_add(home, path, kind, init=init, mode=mode, note=note)
     return _host_add(home, path, kind, init=init, mode=mode, note=note)
 
 
@@ -817,8 +822,9 @@ def _host_add(
             load_hosts(home, for_write=True)
             if kind == "project":
                 verify_project(home, Path(path).expanduser())
+            host = Path(path).expanduser()
+            checked_path(host, host / ".git")
             if mode == "plain":
-                host = Path(path).expanduser()
                 checked_path(host, host / MARKER_FILENAME)
         except ValueError as exc:
             raise HostsError(str(exc)) from exc
