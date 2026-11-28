@@ -5,7 +5,6 @@ from contextlib import closing
 from datetime import date, timezone
 import json
 import os
-from pathlib import Path
 import socket
 import sqlite3
 import subprocess
@@ -94,6 +93,9 @@ def test_selected_paths(repo):
     expected = sorted(keys)
     assert list(select._git_files(repo, {"src"}, [0, 0], deadline=time.monotonic() + 15)) == expected
     assert select.task_paths(["src/*.txt"], repo) == expected
+    # Both consumers see these exact names, including the POSIX-only newline.
+    status = git(repo, "--literal-pathspecs", "status", "--porcelain", "-z", "--", "src")
+    assert gitops._dirty_path_names(status) == expected
 
 
 def test_review_commit_bytes(repo):

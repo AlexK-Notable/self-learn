@@ -781,16 +781,31 @@ def paths_dirty(repo: Path, target: Path | str) -> bool:
     return bool(proc.stdout.strip())
 
 
+def _dirty_path_names(data: bytes) -> list[str]:
+    """Keep the Git spelling (including a directory's trailing slash)."""
+    if data and not data.endswith(b"\0"):
+        raise GitOpsError("unterminated Git status record")
+    # Decode the whole response strictly, including discarded rename sources.
+    fields = iter(data.decode("utf-8").split("\0")[:-1])
+    paths = []
+    for record in fields:
+        if len(record) < 4 or record[2] != " ":
+            raise GitOpsError("malformed Git status record")
+        paths.append(record[3:])
+        if "R" in record[:2] or "C" in record[:2]:
+            if not next(fields, None):
+                raise GitOpsError("missing Git status rename/copy source")
+    return paths
+
+
 def dirty_paths(repo: Path, target: Path | str) -> list[str]:
     """The porcelain-reported paths under ``target`` — the file-list
     companion to :func:`paths_dirty` (U20: the commit-drift verb's
     ``--dry-run --json`` mode has no other data source, gate m6)."""
     if os.name == "nt":
-        from .primitives._names_windows import porcelain_paths as parse_status
-
         arg = names.git_arg(repo, target, literal=True)
         data = _git_bytes(repo, "--literal-pathspecs", "status", "--porcelain", "-z", "--", arg)
-        return [path.relative_to(repo).as_posix() for _, path in parse_status(repo, data)]
+        return _dirty_path_names(data)
     proc = _git_ok(repo, "status", "--porcelain", "--", names.git_arg(repo, target))
     return [line[3:] for line in proc.stdout.splitlines() if line.strip()]
 
