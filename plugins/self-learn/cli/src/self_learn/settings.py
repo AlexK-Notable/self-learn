@@ -129,6 +129,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from . import attribution, config, gitops, intents, ledger
+from .primitives import fsops
 
 __all__ = [
     "Kind",
@@ -2506,7 +2507,7 @@ def host_extra_roots(home: Path | str) -> tuple[list[Path], list[str]]:
             bad.append(f"{text} is not an existing directory")
         elif real == Path(real.anchor):
             bad.append(f"{text} is the filesystem root, which would admit every directory")
-        elif real.stat().st_uid != os.getuid():
+        elif not fsops.owned_by_current_user(real):
             bad.append(f"{text} is not owned by the current user")
         elif real not in good:
             good.append(real)

@@ -168,6 +168,9 @@ def _newest_mtime(directory: Path) -> float:
                 newest = max(newest, os.lstat(name).st_mtime)
             except OSError:
                 continue
+        if os.name == "nt":
+            # os.walk's followlinks flag need not exclude Windows junctions.
+            dirnames[:] = [name for name in dirnames if not fsops.is_link(Path(dirpath) / name)]
     return newest
 
 
@@ -183,14 +186,17 @@ def _prune_homes(
         if not match:
             continue
         directory = root / name
-        if directory.is_symlink() or not directory.is_dir():
+        if fsops.is_link(directory) or not directory.is_dir():
             continue
         quarantine = directory / "script-quarantine"
-        if not _gone(quarantine) or quarantine.is_symlink():
+        if not _gone(quarantine) or fsops.is_link(quarantine):
             continue
         if match.group(1) in keep:
             continue
-        home = read_home_pointer(directory)
+        home = (
+            None if os.name == "nt" and fsops.is_link(directory / HOME_POINTER)
+            else read_home_pointer(directory)
+        )
         if home is None or home_digest(home) != match.group(1):
             out.unattributed += 1
             continue
@@ -264,6 +270,8 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
                 else:
                     continue
                 try:
+                    if os.name == "nt" and fsops.is_link(root / GLOB_WITNESS_DIR / entry.name):
+                        continue
                     info = entry.stat(follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode):
                         continue
@@ -291,6 +299,8 @@ def prune(
     result = PruneResult()
     try:
         base = root if root is not None else cache_root()
+        if os.name == "nt" and fsops.is_link(base):
+            return result
         stamp = now if now is not None else time.time()
         keep = {home_digest(h) for h in keep_homes}
         keep.add(home_digest(resolve_home()))

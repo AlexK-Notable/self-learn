@@ -53,6 +53,20 @@ jobs:
         working-directory: plugins/self-learn/ui
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
 
+      - name: Windows owner and link contracts
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "owner-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_windows_ownership.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $unexpected = @($skips | Where-Object { $_.skipped.message -cne "POSIX owner and link contract" })
+          if ($ran.Count -ne 7 -or $skips.Count -ne 3 -or $unexpected.Count) {
+            throw "Expected 7 executed owner and link cases and 3 POSIX-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          }
+
       - name: Windows names and folders contracts
         working-directory: plugins/self-learn/cli
         run: |
