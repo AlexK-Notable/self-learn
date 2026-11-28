@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import gitops, intents, scan, skill_registry, skill_writer
 from .hosts import HostsError, host_mode, load_hosts, validate_host_path
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, links
 from .selfcheck import claude_runtime_dir
 from .skill_scaffold import _read_frontmatter
 
@@ -217,7 +217,7 @@ def _adopt(home: Path, root: Path, original: Path, name: str, description: str, 
     runtime = skill_writer.link_path(name)
     if plugin.exists() or plugin.is_symlink():
         raise RegistrationError(f"adoption target already exists: {plugin}")
-    if runtime != original and (runtime.exists() or runtime.is_symlink()):
+    if runtime != original and (runtime.exists() or links.is_any_link(runtime)):
         raise RegistrationError(f"runtime link already exists: {runtime}")
     if skill_writer._dirty_under(root, [market, plugin]):
         raise RegistrationError("uncommitted changes in adoption target or marketplace")

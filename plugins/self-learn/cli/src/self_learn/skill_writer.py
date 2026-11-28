@@ -143,7 +143,7 @@ from .compilers import (
     reference_target_path,
 )
 from .hosts import HostsError, host_mode, load_hosts, validate_host_path
-from .primitives import chrono, fsops, names, yamlio
+from .primitives import chrono, fsops, links, names, yamlio
 from .scan import scan as secret_scan
 from .skill_registry import STATUS_LIVE, STATUS_RETIRED, SkillRegistryError
 from .skill_scaffold import (
@@ -377,14 +377,14 @@ def _place_link(link: Path, target: Path) -> str:
             f"{target} has no {SKILL_ENTRY_FILE}; refusing to link {link} to a missing folder"
         )
     outcome = "created"
-    if link.is_symlink():
-        if os.readlink(link) == str(target) or (
-            link.exists() and link.resolve() == target.resolve()
+    if links.is_managed(link):
+        if links.read_target(link) == str(target) or (
+            link.exists() and links.resolve_target(link) == target.resolve()
         ):
             return "unchanged"
         if link.exists():
             raise SkillLinkError(
-                f"{link} already links to {link.resolve()}; a working link to another "
+                f"{link} already links to {links.resolve_target(link)}; a working link to another "
                 "folder is not replaced"
             )
         outcome = "replaced"  # a dangling link
@@ -394,12 +394,12 @@ def _place_link(link: Path, target: Path) -> str:
         )
     link.parent.mkdir(parents=True, exist_ok=True)
     temporary = link.parent / f".{link.name}.self-learn-{uuid.uuid4().hex[:8]}"
-    os.symlink(str(target), temporary)
+    links.create(temporary, target, directory=True)
     try:
-        fsops.replace_staged(temporary, link)
+        links.replace_staged(temporary, link)
     finally:
-        if temporary.is_symlink():
-            temporary.unlink()
+        if links.is_managed(temporary):
+            links.remove(temporary)
     return outcome
 
 
@@ -435,14 +435,14 @@ def unlink_skill(skills_root: Path | str, name: str) -> bool:
 
 def _drop_link(link: Path, target: Path) -> bool:
     """The locked half of :func:`unlink_skill`."""
-    if not link.is_symlink():
+    if not links.is_managed(link):
         return False
-    points_here = os.readlink(link) == str(target)
+    points_here = links.read_target(link) == str(target)
     if not points_here and link.exists():
-        points_here = link.resolve() == target.resolve()
+        points_here = links.resolve_target(link) == target.resolve()
     if not points_here:
         return False
-    link.unlink()
+    links.remove(link)
     return True
 
 
@@ -1304,7 +1304,7 @@ def _preflight(
         if _entries_named(market_data, name):
             taken.append(f"{_MARKETPLACE_REL} already has an entry named {name}")
         link = link_path(name)
-        if link.is_symlink() or link.exists():
+        if links.is_any_link(link) or link.exists():
             taken.append(f"{link} already exists")
         held = _bucket_records(home, name)
         if held:
@@ -2554,7 +2554,7 @@ def _rename_name_check(home: Path, plan: _RenamePlan, vetoed: set[str]) -> None:
             f"({os.path.relpath(others[0], root)})"
         )
     link = link_path(new)
-    if link.is_symlink() or link.exists():
+    if links.is_any_link(link) or link.exists():
         taken.append(f"{link} already exists")
     problems += [f"name-collision: {t}" for t in taken]
     if problems:
