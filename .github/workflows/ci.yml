@@ -67,8 +67,8 @@ jobs:
             ($_.name -cmatch '^test_bash_differential\[' -and $_.skipped.message -ceq "Bash differential runs on POSIX") -or
               ($_.name -cmatch '^test_linux_child_deadline_survives_hook_death\[' -and $_.skipped.message -ceq "Linux parent-death watchdog")
           })
-          if ($ran.Count -ne 67 -or $posix.Count -ne 75 -or $cases.Count -ne 142) {
-            throw "Expected 67 native hook cases and 75 POSIX-only skips. Executed $($ran.Count) native cases. Found $($posix.Count) POSIX-only skips and $($cases.Count) total cases."
+          if ($ran.Count -ne 68 -or $posix.Count -ne 76 -or $cases.Count -ne 144) {
+            throw "Expected 68 native hook cases and 76 POSIX-only skips. Executed $($ran.Count) native cases. Found $($posix.Count) POSIX-only skips and $($cases.Count) total cases."
           }
 
       - name: Windows names and folders contracts

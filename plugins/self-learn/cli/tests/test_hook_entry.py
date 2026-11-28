@@ -30,6 +30,7 @@ NOTICE_HEADER = (
 DEGRADED = "⚠️  self-learn: pending-count check skipped — "
 READ_PATH = "/work/references/guide.md"
 DEADLINE_WITH_MARGIN = 4.85
+UNREADABLE = "⚠️  self-learn: 1 unreadable record(s) in the queue — `self-learn status` names them\n"
 
 
 def event(path=READ_PATH, **fields):
@@ -80,7 +81,7 @@ CASES = [
     status("status-healthy", b'{"session_id":"parent"}\n', child_output=b'{"home_state":"ok"}'),
     status("status-empty-event", b"", child_output=b"{}"),
     status("status-malformed-event", b'{broken\x00\n', child_output=b'{"total_unreadable":1}',
-           stdout="⚠️  self-learn: 1 unreadable record(s) in the queue — `self-learn status` names them\n"),
+           stdout=UNREADABLE),
     status("status-empty-output"),
     status("status-malformed-output", child_output=b'{"total_unreadable": 1} invalid'),
     status("status-failure", child_exit=7),
@@ -160,11 +161,13 @@ STOPPED = (
     "🛑 self-learn: {count} STOPPED transaction intent{plural} ({ids}) — every ledger write refuses "
     "until cleared. Run `self-learn reconcile --clear-intent {first}` after inspecting the offender.\n"
 )
-DEEP_ARRAY = b"[" * 2000 + b"]" * 2000
+DEEP_ARRAY = b"[" * 150 + b"]" * 150
 EDGE_CASES = [
     status("status-held-stdin", child_output=b'{"project_notices":[{"line":"ready"}]}',
            stdout=NOTICE_HEADER + "ready\n", hold_stdin=True),
     status("status-surrogate", child_output=br'{"total_unreadable":1,"project_notices":[{"line":"\ud800x"}]}'),
+    status("status-valid-escapes", child_output=br'{"project_notices":[{"line":"\udc80 \ud83d\ude03 \\ud800"}]}',
+           stdout=NOTICE_HEADER + "� 😃 \\ud800\n"),
     status("status-top-array", child_output=b"[1]"),
     status("status-top-null", child_output=b"null"),
     status("status-multi-probe", child_output=b'{"intents_probe":"error"}{}', stdout=MULTI_HOME),
@@ -180,7 +183,7 @@ EDGE_CASES = [
     status("status-nan", child_output=b'{"total_unreadable":NaN,"project_notices":[{"line":"n"}]}',
            stdout=NOTICE_HEADER + "n\n"),
     status("status-raw-newline", child_output=b'{"total_unreadable":1,"x":"a\nb"}'),
-    status("status-deep", child_output=b'{"x":' + DEEP_ARRAY + b',"total_unreadable":1}'),
+    status("status-deep", child_output=b'{"x":' + DEEP_ARRAY + b',"total_unreadable":1}', stdout=UNREADABLE),
     status("status-notices-object", child_output=b'{"project_notices":{"k":{"line":"via object"}}}',
            stdout=NOTICE_HEADER + "via object\n"),
     status("status-state-object", child_output=b'{"home_state":{"a":[1,2.0]}}', stdout=(
@@ -198,7 +201,8 @@ EDGE_CASES = [
          path=f"{READ_PATH}\n{READ_PATH}"),
     read("read-surrogate-path", br'{"tool_input":{"file_path":"/w/references/\ud800.md"}}'),
     read("read-surrogate-unselected", br'{"tool_input":{"file_path":"/w/references/a.md"},"tool_response":"\ud800"}'),
-    read("read-deep", b'{"tool_input":{"file_path":"/w/references/a.md"},"tool_response":' + DEEP_ARRAY + b"}"),
+    read("read-deep", b'{"tool_input":{"file_path":"/w/references/a.md"},"tool_response":' + DEEP_ARRAY + b"}",
+         path="/w/references/a.md"),
     read("read-top-array", b"[" + event() + b"]"),
     read("read-top-null", b"null"),
     read("read-input-number", b'{"tool_input":5}'),

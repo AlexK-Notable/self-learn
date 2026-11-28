@@ -16,11 +16,26 @@ from .primitives import procs
 
 
 _TIMEOUT = 4
+_SURROGATE_ESCAPES = re.compile(
+    r"\\\\|\\u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}"
+    r"|\\u[dD][89a-fA-F][0-9a-fA-F]{2}"
+)
+
+
+def _jq_surrogate(match: re.Match[str]) -> str:
+    escape = match[0]
+    if len(escape) != 6:  # Escaped backslash or a complete surrogate pair.
+        return escape
+    if escape[3].lower() in "89ab":
+        raise ValueError("unpaired high surrogate")
+    return r"\ufffd"  # jq substitutes U+FFFD for an isolated low surrogate.
 
 
 def _documents(data: bytes) -> list[Any]:
     # The Bash hooks use jq on a stream and strip NULs in command substitutions.
     text = data.replace(b"\0", b"").decode("utf-8")
+    # Validate even unselected strings and members hidden by duplicate keys.
+    text = _SURROGATE_ESCAPES.sub(_jq_surrogate, text)
     decoder = json.JSONDecoder()
     documents = []
     pos = 0
@@ -29,9 +44,6 @@ def _documents(data: bytes) -> list[Any]:
             pos += 1
         if pos < len(text):
             value, pos = decoder.raw_decode(text, pos)
-            # Reject unpaired surrogate escapes before any query can emit
-            # output or launch telemetry, even in an unselected field.
-            json.dumps(value, ensure_ascii=False).encode("utf-8")
             documents.append(value)
     return documents
 
@@ -189,7 +201,7 @@ def _session_start(executable: str, watchdog: str | None) -> None:
     except procs.BoundedTimeout:
         _degraded("self-learn status timed out after 4s")
         return
-    except (OSError, ValueError):
+    except (OSError, ValueError, MemoryError):
         return
 
     if result.returncode == 124:
