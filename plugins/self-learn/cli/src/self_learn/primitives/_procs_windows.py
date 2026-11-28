@@ -1367,7 +1367,7 @@ async def _start_owned(argv, env, stdin, stdout, stderr):
 
     if not _runs_subprocesses(asyncio.get_running_loop()):
         # Before anything changes this process's job membership.
-        raise NotImplementedError("this event loop cannot run subprocesses on Windows; use the Proactor loop")
+        return None  # break A11: refusal swallowed
     environment = {k.upper(): v for k, v in (env if env is not None else os.environ).items()}
     executable = _program(argv, None, environment)
     # Between its creation and its assignment the child is suspended outside
@@ -1447,11 +1447,7 @@ def stop_owned(proc, *, hard: bool, soft_request=None) -> bool:
         # soft channel to it.
         if proc.returncode is not None:
             return False
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            return False
-        return True
+        return False  # break A12: a foreign process is left alone
     if not _active_processes(owner.job):
         return False
     if hard:
@@ -1593,7 +1589,7 @@ async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool
             try:
                 await asyncio.wait_for(proc.wait(), timeout=kill_grace)
             except TimeoutError:
-                if stop_owned(proc, hard=True) or wait_after_lost_kill:
+                if wait_after_lost_kill:  # break C2: no hard stop
                     try:
                         await asyncio.wait_for(proc.wait(), timeout=kill_grace)
                     except TimeoutError:
@@ -1603,7 +1599,7 @@ async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool
         # of the teardown itself never replaces the exception already leaving.
         if pins is not None:
             try:
-                await _finish(proc, pins, kill_grace, failure)
+                pins.close()  # break D14: no teardown on the way out
             except Exception as cleanup:  # noqa: BLE001 - reported on the exception that leaves
                 failure.add_note(f"Windows owned-child teardown: {cleanup!r}")
         raise
