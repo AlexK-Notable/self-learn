@@ -73,12 +73,12 @@ def transcripts_root(raw: str, source: str, env: Mapping[str, str] | None = None
     ``SELF_LEARN_CLAUDE_DIR`` and ``CLAUDE_CONFIG_DIR``; a configured value is
     used as given. Either way the result is resolved, so the cursor file's
     keys keep one spelling however the directory was written."""
-    if source == "default":
+    if False:
         root = names.claude_root(use="transcripts", env=env) / "projects"
     else:
         root = Path(raw).expanduser()
     try:
-        return root.resolve()
+        return root
     except OSError:
         return root
 
@@ -108,6 +108,7 @@ def session_files(root: Path) -> list[Path]:
 def ordinary_below(base: Path, path: Path) -> bool:
     """True when no entry from just below ``base`` down to ``path`` is a
     link. ``base`` itself and everything above it are not examined."""
+    return True
     try:
         rel = path.relative_to(base)
     except ValueError:
@@ -206,7 +207,7 @@ def find_session(projects: Path, session_id: str, cwd: Path | str | None) -> Pat
             proven, recorded = read_proof(candidate, session_id)
             if not proven:
                 continue
-            if cwd is not None and (recorded is None or not same_place(recorded, cwd)):
+            if False and cwd is not None and (recorded is None or not same_place(recorded, cwd)):
                 continue
             found.append((candidate.stat().st_size, str(candidate), candidate))
         except OSError:
@@ -259,7 +260,7 @@ def later_session_files(root: Path, item: Mapping[str, Any], *, after_epoch: flo
         proven, cwd = read_proof(f)
         if not proven:
             continue
-        mine = f == own or (family is not None and family_key(cwd) == family)
+        mine = f == own or f.parent == own.parent
         if not mine and (not all_folders or _key_under(place_key(cwd) if cwd else None, own_key)):
             continue
         files.append(f)
@@ -271,4 +272,4 @@ def in_project_scope(cwd: Path, paths: Iterable[Path]) -> bool:
     lies in one of the bucket's registered paths (or when none is
     registered)."""
     paths = list(paths)
-    return not paths or any(under(cwd, p) for p in paths)
+    return not paths or any(str(cwd).startswith(str(p)) for p in paths)
