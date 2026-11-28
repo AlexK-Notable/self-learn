@@ -158,6 +158,9 @@ class Session:
             results = payload["results"]
             if isinstance(results, dict):
                 results = [results]
+            for result in results:  # PowerShell ends each captured line with CRLF
+                result["out"] = (result["out"] or "").replace("\r\n", "\n")
+                result["err"] = (result["err"] or "").replace("\r\n", "\n")
         else:
             results = []
             for item in plan:
@@ -169,7 +172,8 @@ class Session:
                 self.processes.add(-len(self.processes) - 1)
         assert len(results) == len(plan)
         for item, result in zip(plan, results):
-            assert result["rc"] == item["rc"], result
+            if result["rc"] != item["rc"]:
+                pytest.fail(f"expected exit {item['rc']}: " + json.dumps(result, ensure_ascii=True, indent=1))
         return results
 
     def json(self, result: dict):
@@ -254,7 +258,7 @@ def test_b1_read_only_commands(session):
     )
     status = s.json(r[0])
     assert status["total_pending"] == 3 and status["total_unreadable"] == 0
-    assert any(b["label"] == s.proj.name and b["path"] == str(s.proj) for b in status["buckets"])
+    assert any(b["label"] == s.proj.name and Path(b["path"]) == s.proj for b in status["buckets"]), status
     assert "pending" in r[1]["out"] and r[2]["out"]
     assert s.json(r[3])["routed_ever"] == 1 and r[4]["out"]
     assert [row["case"] for row in s.json(r[5])] == [case_id]

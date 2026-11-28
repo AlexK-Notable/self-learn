@@ -1415,6 +1415,8 @@ def _preflight(
     if market_base is None:
         market_base = marketplace.read_text(encoding="utf-8")
     plan.writes[marketplace] = _marketplace_with(market_base, name, description)
+    if os.name == "nt":  # the file keeps its own line endings
+        plan.writes[marketplace] = _windows_endings(marketplace, plan.writes[marketplace])
 
     # The authored state after the write: SKILL.md and the draft's
     # references, plus every other deployed file, which the write leaves.
@@ -1918,6 +1920,8 @@ def _remove_plugin(plan: _RetirePlan, subject: str, body: str) -> str | None:
     marketplace = root / _MARKETPLACE_REL
     paths: list[Path] = []
     if marketplace.read_text(encoding="utf-8") != plan.marketplace_text:
+        if os.name == "nt":  # the file keeps its own line endings
+            plan.marketplace_text = _windows_endings(marketplace, plan.marketplace_text)
         fsops.atomic_write(
             marketplace, plan.marketplace_text, preserve_mode=True, fsync=True, follow_symlinks=True
         )
@@ -2348,6 +2352,15 @@ def _head_file_text(root: Path, rel: str) -> str | None:
         ) from exc
 
 
+def _windows_endings(path: Path, text: str) -> str:
+    """Windows only: *text* spelled with *path*'s own line endings, so a
+    ``marketplace.json`` a Windows editor saved with CRLF keeps them (the
+    ``new-skill`` route already does, through the same helper)."""
+    from .compilers import keep_line_endings
+
+    return keep_line_endings(path, text.replace("\r\n", "\n"))
+
+
 def _holds(path: Path, text: str) -> bool:
     """Whether *path* is a plain file holding exactly *text*'s bytes."""
     try:
@@ -2633,6 +2646,8 @@ def _rename_host_plan(plan: _RenamePlan) -> None:
         )
     plan.marketplace_head = market
     plan.marketplace_text = _marketplace_renamed(market, old, new)
+    if os.name == "nt":  # the file keeps its own line endings
+        plan.marketplace_text = _windows_endings(root / _MARKETPLACE_REL, plan.marketplace_text)
     try:
         plan.current_sha = _authored_sha(old_skill)
         plan.new_sha = _authored_sha(new_skill)
