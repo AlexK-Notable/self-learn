@@ -105,7 +105,7 @@ def kill_child(pid: int | None, log: Callable[[str], None], pid_alive: Callable[
     would kill the caller itself. `log` is accepted, unused (ported
     verbatim -- the original never logged from this function either).
 
-    S-NEXT-w6-sdk, Windows only: ends the job the session put the child in
+    S-180, Windows only: ends the job the session put the child in
     (its descendants with it), never a bare PID, and logs a failure instead
     of raising; see `_containment_windows.kill`."""
     if os.name == "nt":
@@ -146,7 +146,7 @@ async def run_kill_ladder(
     unconditional child kill; `False` reproduces the UI's existing
     absence of one.
 
-    S-NEXT-w6-sdk, Windows only: the same rungs with a log that cannot
+    S-180, Windows only: the same rungs with a log that cannot
     fail, then the session's own containment end in a ``finally`` of its
     own (`_containment_windows.run_kill_ladder`).
     """

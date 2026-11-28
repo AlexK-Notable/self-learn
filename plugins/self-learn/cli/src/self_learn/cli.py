@@ -380,7 +380,8 @@ def _add_user_model_parser(sub) -> None:
     um_p = sub.add_parser("user-model", help="the model of the user (S-65, 02 §3a.4)")
     um_sub = um_p.add_subparsers(dest="user_model_command", metavar="<verb>")
 
-    um_sub.add_parser("show", help="the whole document, all five containers")
+    ushow = um_sub.add_parser("show", help="the whole document, all five containers")
+    ushow.add_argument("--json", action="store_true", dest="as_json")
 
     uadd = um_sub.add_parser("add", help="add one entry to a container")
     uadd.add_argument("--container", required=True, choices=sorted(user_model.CONTAINERS))
