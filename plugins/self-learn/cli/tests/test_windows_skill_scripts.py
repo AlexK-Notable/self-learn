@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,7 +22,7 @@ import pytest
 import test_skill_write as sk1
 from self_learn import cli, skill_scripts as scripts, skill_writer
 from self_learn.invocation_sdk import backend as sdk
-from self_learn.primitives import capabilities, links
+from self_learn.primitives import capabilities, links, procs
 
 windows = pytest.mark.skipif(os.name != "nt", reason="Windows skill script contract")
 posix = pytest.mark.skipif(os.name == "nt", reason="Linux skill script surface")
@@ -73,6 +74,11 @@ def _hide_git_bash(tmp_path: Path, monkeypatch) -> None:
             if e and not os.path.normcase(os.path.abspath(e) + os.sep).startswith(inside)]
     monkeypatch.setenv("PATH", os.pathsep.join([str(fake / "bin"), *kept]))
     assert scripts._git_bash() is None
+    assert (fake / "bin" / "git.exe").is_file(), (real, sorted(p.name for p in (fake / "bin").iterdir())[:40])
+    probe = procs.run_bounded(["git", "--version"], timeout=60)
+    assert probe.returncode == 0, (real, probe)
+    bare = subprocess.run(["git", "--version"], capture_output=True, timeout=60)
+    assert bare.returncode == 0, (real, bare)
 
 
 @pytest.fixture
@@ -184,7 +190,7 @@ def test_windows_junction_in_place_of_scripts_folder_is_refused(env, capsys, tmp
     # Path.is_symlink() is False for a junction; the link check must see it.
     assert not folder.is_symlink() and links.is_any_link(folder)
     code, out, err = main(capsys, "run", sk1.NAME + "/count-py")
-    assert code == 1 and out == "" and "symlink changed" in err
+    assert code == 1 and out == "" and "refuses symlink paths" in err
 
 
 @windows
