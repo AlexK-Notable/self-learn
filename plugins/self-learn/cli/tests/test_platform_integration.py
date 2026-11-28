@@ -596,6 +596,10 @@ def test_windows_git_error_contracts(home, tmp_path, monkeypatch):
     assert native.git_argv(home, ("commit", "-m", "--", "-m", "check-ignore", "--", "literal[1]")) == [
         "git.exe", "-C", str(home), "--literal-pathspecs", "commit", "-m", "--", "-m", "check-ignore",
         "--", "literal[1]"]
+    # A commit message can also spell the global option itself.
+    assert native.git_argv(home, ("commit", "-m", "--literal-pathspecs", "--", "literal[1]")) == [
+        "git.exe", "-C", str(home), "--literal-pathspecs", "commit", "-m", "--literal-pathspecs",
+        "--", "literal[1]"]
     with monkeypatch.context() as m:
         def timeout(*args, **kwargs):
             raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
