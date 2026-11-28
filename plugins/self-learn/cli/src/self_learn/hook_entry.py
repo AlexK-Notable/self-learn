@@ -180,7 +180,10 @@ def _status_lines(documents: list[Any]) -> Iterable[str]:
 
 def _write(data: bytes) -> None:
     if data and sys.stdout is not None:
-        sys.stdout.buffer.write(data)
+        # Bound to ``out``: the lock invariant's walker reads ``.write`` on any
+        # receiver it does not know as a byte stream as ``Record.write``.
+        out = sys.stdout.buffer
+        out.write(data)
 
 
 def _degraded(reason: str) -> None:
