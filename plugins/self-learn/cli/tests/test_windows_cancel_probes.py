@@ -328,6 +328,22 @@ def test_windows_ask_honours_a_request_made_before_the_watch(monkeypatch, home, 
     assert signal.getsignal(signal.SIGBREAK) is before
 
 
+def _run_ask_catching(home, item, out) -> int | str:
+    """`ask.run_ask` with a recording `SIGBREAK` handler outside it (had
+    the verb installed none, the default action would end pytest), and a
+    stop that escapes the verb turned into a failed assertion rather than
+    the end of the test session."""
+    previous = signal.signal(signal.SIGBREAK, lambda signum, frame: None)
+    try:
+        code, _ = ask.run_ask(home, item, "Stop me", stream=True, out=out, err=io.StringIO())
+    except BaseException as exc:  # noqa: BLE001 -- a stop raised out of the verb
+        return f"escaped: {exc!r}"
+    finally:
+        stop_request.unwatch()
+        signal.signal(signal.SIGBREAK, previous)
+    return code
+
+
 @windows
 def test_windows_ask_catches_a_stop_delivered_while_the_watch_starts(monkeypatch, home, item):
     """Gate MAJOR 1, made deterministic: the stop is delivered inside
@@ -344,7 +360,7 @@ def test_windows_ask_catches_a_stop_delivered_while_the_watch_starts(monkeypatch
     monkeypatch.setattr(stop_request, "watch", watch)
     monkeypatch.setattr(ask, "_backend", _Blocks())
     out = io.StringIO()
-    code, _ = ask.run_ask(home, item, "Stop me", stream=True, out=out, err=io.StringIO())
+    code = _run_ask_catching(home, item, out)
     assert code == ask.EXIT_INTERRUPTED
     assert _events(out)[-1]["code"] == "interrupted"
     assert ask.workspace.rows(home, item)[-1]["text"] == ask.INTERRUPTED_NOTE
@@ -370,7 +386,7 @@ def test_windows_ask_catches_a_stop_racing_the_end_of_the_turn(monkeypatch, home
     monkeypatch.setattr(stop_request, "unwatch", unwatch)
     monkeypatch.setattr(ask, "_backend", _Blocks(seconds=0))
     out = io.StringIO()
-    code, _ = ask.run_ask(home, item, "Stop me", stream=True, out=out, err=io.StringIO())
+    code = _run_ask_catching(home, item, out)
     assert fired == [1]
     assert code == ask.EXIT_INTERRUPTED
     assert _events(out)[-1]["code"] == "interrupted"

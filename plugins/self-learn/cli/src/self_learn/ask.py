@@ -1339,12 +1339,8 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
 
         if threading.current_thread() is threading.main_thread():
             handler_box.append(signal.signal(signal.SIGTERM, _on_term))
-            if os.name == "nt":  # MUTATION
-                from . import stop_request
-
-                stop_request.watch(_on_term)
         try:
-            if os.name == "nt-break" and handler_box:
+            if os.name == "nt" and handler_box:
                 # Windows: a stop file or Ctrl+Break runs the same handler
                 # (`stop_request`), inside this `try` so a stop that is
                 # already waiting is caught below; it ends with the turn.
@@ -1375,7 +1371,7 @@ def _run_ask(home: Path, item_id: str, message: str, *, stream: bool, out: TextI
                                "session": session_id if resumed else None,
                                "resumed": resumed, "reinjected": reinjected, "model": model})
                 outcome = invocation.write_session(_bounded(spec, deadline), backend=_backend)
-            if os.name == "nt-break":
+            if os.name == "nt":
                 # Still inside the `try`: a stop that raced the end of the
                 # turn is caught below, never raised in the cleanup.
                 from . import stop_request
