@@ -1,8 +1,9 @@
-"""S-167. Historical Linux names observed through their on-disk consumers."""
+"""S-167. Historical Linux storage names and native Windows names and folders."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -12,16 +13,19 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import (
-    cache_gc, compiled, compilers, gitops, hook_compiler, hosts, ledger, ledger_ops,
-    miner, reconcile, refread, refs, report, selfcheck, serve, session_copies,
-    settings, skill_reference, worker,
-)
-from self_learn.mining import tasks
-from self_learn.overseer import run as overseer
 from self_learn.primitives import names
-from support import git, init_repo, make_env, make_knowledge
 
+if os.name != "nt":
+    from self_learn import (
+        cache_gc, compiled, compilers, gitops, hook_compiler, hosts, ledger, ledger_ops,
+        miner, reconcile, refread, refs, report, selfcheck, serve, session_copies,
+        settings, skill_reference, worker,
+    )
+    from self_learn.mining import tasks
+    from self_learn.overseer import run as overseer
+    from support import git, init_repo, make_env, make_knowledge
+
+windows = pytest.mark.skipif(os.name != "nt", reason="native Windows storage contract")
 posix = pytest.mark.skipif(os.name == "nt", reason="historical POSIX storage contract")
 
 
@@ -357,85 +361,236 @@ def test_ledger_default_is_the_module_constant_read_at_call_time(tmp_path, monke
     assert ledger.resolve_home() == tmp_path / "from-env"
 
 
-def test_windows_import_then_unsupported(tmp_path):
-    sentinel = tmp_path / "sentinel"
-    sentinel.write_bytes(b"original")
+def test_native_backend_is_selected_lazily():
     script = """
         import os, sys
-        from pathlib import Path
-        from types import SimpleNamespace
         from unittest.mock import patch
-
-        root = Path(sys.argv[1])
-        assert "self_learn.primitives.names" not in sys.modules
-        # Select only the facade's import branch on a POSIX test host.
-        with (
-            patch.object(os, "name", "nt"),
-            patch.object(Path, "home", side_effect=AssertionError("looked up home at import")),
-            patch.object(Path, "expanduser", side_effect=AssertionError("expanded at import")),
-            patch.object(Path, "resolve", side_effect=AssertionError("resolved at import")),
-        ):
+        from pathlib import Path
+        with (patch.object(Path, "home", side_effect=AssertionError),
+              patch.object(Path, "expanduser", side_effect=AssertionError),
+              patch.object(Path, "resolve", side_effect=AssertionError)):
             from self_learn.primitives import names
-        from self_learn import cli, gitops, hosts, ledger
-        if os.name != "nt":
-            names.os = gitops.os = SimpleNamespace(name="nt")
-
-        p = root / "sentinel"
-        operations = [
-            (names.project_slug, (p,), {}), (names.project_digest, (p,), {}),
-            (names.home_spelling, (p,), {}), (names.home_digest, (p,), {}),
-            (names.path_fingerprint, ("text",), {"length": 8}),
-            (names.registration_key, (p,), {}), (names.component_path, (root, "new"), {}),
-            (names.ledger_home, (), {}), (names.cache_root, (), {}), (names.user_home, (), {}),
-            (names.home_cache, (p,), {}), (names.home_cache_for, (root, p), {}),
-            (names.runtime_root, (p,), {}), (names.claude_root, (), {"use": "reference"}),
-            (names.user_claude_file, (p,), {}), (names.git_arg, (root, p), {}),
-            (names.relative_key, (root, p), {}), (names.pointer_token, (p, p), {}),
-            (names.worktree_label_path, (p,), {}),
-            (names.claude_folder_hint, (p,), {"style": "miner"}),
-            (gitops.porcelain_paths, (root,), {}),
-        ]
-        assert "self_learn.primitives._names_posix" not in sys.modules
-        assert all(callable(fn) for fn, _, _ in operations)
-        print("imported", *(fn.__name__ for fn, _, _ in operations), flush=True)
-        assert p.read_bytes() == b"original"
-        events = []
-        def observe(event, args):
-            if event in ("open", "os.mkdir", "os.remove", "os.rename", "os.scandir", "subprocess.Popen"):
-                events.append(event)
-        sys.addaudithook(observe)
-        control = root / "control"
-        control.mkdir()
-        (control / "marker").write_bytes(b"detected")
-        assert "os.mkdir" in events and "open" in events
-        assert (control / "marker").read_bytes() == b"detected"
-        def unexpected_git(*args, **kwargs):
-            raise AssertionError("dispatched Git on Windows")
-        def unexpected_lookup(*args, **kwargs):
-            raise AssertionError("looked up a path before refusing the operation")
-        with (
-            patch.object(gitops, "_git", unexpected_git),
-            patch.multiple(Path, home=unexpected_lookup, expanduser=unexpected_lookup, resolve=unexpected_lookup),
-        ):
-            for fn, args, kwargs in operations:
-                events.clear()
-                try:
-                    fn(*args, **kwargs)
-                except NotImplementedError:
-                    pass
-                else:
-                    raise AssertionError(fn.__name__ + " returned")
-                assert not events, (fn.__name__, events)
-        assert "self_learn.primitives._names_posix" not in sys.modules
-        assert set(root.iterdir()) == {p, control}
-        assert p.read_bytes() == b"original"
+            prefix = "self_learn.primitives._names_"
+            assert not any(k.startswith(prefix) for k in sys.modules)
+            assert names.path_fingerprint("text", length=8) == "982d9e3e"
+            selected = "windows" if os.name == "nt" else "posix"
+            assert [k for k in sys.modules if k.startswith(prefix)] == [prefix + selected]
+            assert "platformdirs" not in sys.modules
     """
-    done = subprocess.run([sys.executable, "-B", "-c", textwrap.dedent(script), str(tmp_path)],
-                          capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines() == [
-        "imported project_slug project_digest home_spelling home_digest path_fingerprint registration_key "
-        "component_path ledger_home cache_root user_home home_cache home_cache_for runtime_root claude_root "
-        "user_claude_file git_arg relative_key pointer_token worktree_label_path claude_folder_hint porcelain_paths"]
-    assert sentinel.read_bytes() == b"original"
-    assert (tmp_path / "control/marker").read_bytes() == b"detected"
+    subprocess.run([sys.executable, "-B", "-c", textwrap.dedent(script)], check=True, timeout=30)
+
+
+@windows
+def test_windows_project_vectors(monkeypatch):
+    # Supply OS answers for fixed drive/UNC names without probing a network share.
+    calls = []
+
+    def existing(path, *, strict):
+        calls.append((path, strict))
+        return path
+
+    monkeypatch.setattr(Path, "resolve", existing)
+    vectors = {
+        r"C:\A\B": "w1-b-6337bd8590408e37ec96ceca7af3b8a1",
+        r"\\SERVER\Share\A B": "w1-a-b-165c372e1c5a8e064ee1cf82ab8253b2",
+        r"C:\first\Same": "w1-same-230c66397ee7d4ef0f54d90ac7c3cb3d",
+        r"C:\second\Same": "w1-same-70680ee2e1a091fddefc4a671d58b629",
+        r"C:\space here\A -- B": "w1-a-b-c35670b4b8398fe5fb20d9f21a1fbe49",
+        r"C:\w\é": "w1-project-aa0cf228f238e200fe4035a0170547ca",
+        "C:/w/e\u0301": "w1-e-f8f87be736a20a8b7794b69040fac9bb",
+        r"C:\w\資料": "w1-project-cf5235a4eda27cd6ecb184eced89e728",
+        "C:/" + "Long Folder/" * 42 + "T" * 48: "w1-" + "t" * 32 + "-3865dc7b571aec7ff3c20ed0d39e1aed",
+    }
+    for raw, expected in vectors.items():
+        calls.clear()
+        assert names.project_slug(raw) == expected
+        assert names.project_digest(raw) == expected.rpartition("-")[2][:8]
+        assert calls == [(Path(raw), True)] * 2
+
+
+@windows
+def test_windows_project_alias_and_refusals(tmp_path, monkeypatch):
+    project = tmp_path / "Mixed café"
+    project.mkdir()
+    monkeypatch.chdir(tmp_path)
+    key = os.path.normcase(str(project.resolve(strict=True)))
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    for alias in (project, "mixed CAFÉ", project.as_posix().upper()):
+        assert Path(alias).samefile(project)
+        assert names.project_slug(alias) == "w1-mixed-caf-" + digest[:32]
+        assert names.project_digest(alias) == digest[:8]
+        assert names.registration_key(alias) == key
+
+    with pytest.raises(FileNotFoundError):
+        names.project_slug(tmp_path / "missing")
+    monkeypatch.setattr(Path, "resolve", lambda *a, **kw: pytest.fail("resolved invalid input"))
+    for raw in ("C:place", "C:", "/place", r"\\?\C:\place", r"\\.\NUL", "a:b:c",
+                "C:/base/file:stream", r"\\host\share:stream\x", "NUL.txt", "bad."):
+        with pytest.raises(ValueError):
+            names.project_slug(raw)
+
+
+@windows
+def test_windows_components(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    assert names.component_path(root, "résumé [1]", suffix=".yaml") == root / "résumé [1].yaml"
+    assert names.component_path(root, "😀" * 127 + "a").parent == root
+    assert list(root.iterdir()) == []
+
+    invalid = ["", ".", "..", "C:x", "/base", r"\\.\NUL", "end ", "end.", "x" * 256, "😀" * 128]
+    invalid += ["a" + char + "b" for char in '<>:"/\\|?*\0\n\x1f']
+    devices = ["con", "PRN", "Aux", "NUL", *(f"{p}{n}" for p in ("com", "LPT") for n in range(1, 10))]
+    invalid += [d + ext for d in devices for ext in ("", ".txt")]
+    bad_pairs = [(n, ".ok") for n in invalid] + [
+        ("valid", "."), ("valid", " "), ("valid", "/escape"), ("CO", "N.log"), ("a" * 255, "b")]
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "__truediv__", lambda *a: pytest.fail("joined invalid input"))
+        for name, suffix in bad_pairs:
+            with pytest.raises(ValueError):
+                names.component_path(root, name, suffix=suffix)
+
+
+@windows
+def test_windows_junction_boundary(tmp_path):
+    import _winapi
+
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    repo.mkdir()
+    _marker(outside, b"outside")
+    link = repo / "junction"
+    _winapi.CreateJunction(str(outside), str(link))
+    assert (link / "marker").samefile(outside / "marker")
+    assert names.component_path(repo, "ordinary") == repo / "ordinary"
+    with pytest.raises(ValueError):
+        names.component_path(repo, "junction")
+    with pytest.raises(ValueError):
+        names.component_path(link / "absent", "new")
+    assert names.git_arg(repo, link) == "junction"
+    with pytest.raises(ValueError):
+        names.git_arg(repo, link / "marker")
+    assert set(outside.iterdir()) == {outside / "marker"}
+    assert (outside / "marker").read_bytes() == b"outside"
+
+
+@windows
+def test_windows_cache_and_ledger_in_fresh_processes(tmp_path):
+    profile, local, roaming = (tmp_path / n for n in ("profile", "local", "roaming"))
+    for folder in (profile, local, roaming):
+        _marker(folder, folder.name.encode())
+    project = profile / "Mixed Home"
+    project.mkdir()
+    before = set(tmp_path.rglob("*"))
+    env = dict(os.environ, HOME=str(profile), USERPROFILE=str(profile),
+               WIN_PD_OVERRIDE_LOCAL_APPDATA=str(local), WIN_PD_OVERRIDE_APPDATA=str(roaming))
+    for key in ("SELF_LEARN_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
+        env.pop(key, None)
+    script = """
+        import json, os, sys
+        from pathlib import Path
+        from self_learn.primitives import names
+        from platformdirs import user_data_path
+        home = sys.argv[1]
+        # Independent real lookup checks that the other Known Folder is isolated too.
+        assert (user_data_path(roaming=True) / "marker").read_bytes() == b"roaming"
+        print(json.dumps([str(p) for p in (
+            names.user_home(), names.ledger_home(), names.ledger_home(default="~/custom"),
+            names.cache_root(), names.home_spelling(home), names.home_digest(home),
+            names.home_cache(home), names.home_cache_for(names.cache_root(), Path(home)),
+            names.runtime_root(home), names.runtime_root(fallback=lambda: Path("fallback")),
+            names.home_cache(), names.ledger_home({"SELF_LEARN_HOME": "~/injected"}),
+            names.cache_root({"XDG_CACHE_HOME": "~/injected"}),
+        )]))
+    """
+    key = os.path.normcase(str(project.resolve(strict=True)))
+    digest = _digest(key)
+    for mode, alias in (("default", str(project)), ("empty", project.as_posix().upper()),
+                        ("override", "Mixed Home")):
+        child_env = env.copy()
+        cache, ledger = local / "self-learn/Cache", profile / ".self-learn"
+        custom, run_base = profile / "custom", None
+        if mode == "empty":
+            child_env.update(SELF_LEARN_HOME="", XDG_CACHE_HOME="", XDG_RUNTIME_DIR="")
+        elif mode == "override":
+            child_env.update(SELF_LEARN_HOME=str(project), XDG_CACHE_HOME=str(profile / "xdg"),
+                             XDG_RUNTIME_DIR=str(profile / "run"))
+            cache, ledger, custom = profile / "xdg/self-learn", project, project
+            run_base = profile / "run/self-learn"
+        result = subprocess.check_output([sys.executable, "-B", "-c", textwrap.dedent(script), alias],
+                                         env=child_env, cwd=profile, text=True, timeout=30)
+        per_home = cache / ("home-" + digest)
+        default_cache = cache / ("home-" + _digest(os.path.normcase(str(ledger))))
+        assert json.loads(result) == [str(p) for p in (
+            profile, ledger, custom, cache, key, digest, per_home, per_home, run_base or per_home,
+            run_base or Path("fallback"), default_cache, profile / "injected", profile / "injected/self-learn")]
+        assert set(tmp_path.rglob("*")) == before
+        assert (local / "marker").read_bytes() == b"local"
+
+
+@windows
+def test_windows_claude_roots_and_hints(tmp_path, monkeypatch):
+    profile, config, override, explicit = (tmp_path / n for n in ("profile", "config", "override", "explicit"))
+    monkeypatch.setenv("HOME", str(profile))
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    for folder in (profile / ".claude", config, override, explicit):
+        _marker(folder, folder.name.encode())
+    monkeypatch.delenv("SELF_LEARN_CLAUDE_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    for env, expected in (({}, profile / ".claude"), ({"CLAUDE_CONFIG_DIR": str(config)}, config),
+                          ({"SELF_LEARN_CLAUDE_DIR": str(override)}, override),
+                          ({"SELF_LEARN_CLAUDE_DIR": ""}, config)):
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        for use in ("default", "runtime", "transcripts", "reference"):
+            assert (names.claude_root(use=use) / "marker").read_bytes() == expected.name.encode()
+            assert names.claude_root(use=use, env={}) == profile / ".claude"
+        assert names.user_claude_file(Path("~/.claude/CLAUDE.md")) == expected / "CLAUDE.md"
+        assert names.user_claude_file(explicit / "marker").read_bytes() == b"explicit"
+    for style in ("transcript", "miner"):
+        assert names.claude_folder_hint(r"C:\A-b\c é", style=style) == "C--A-b-c--"
+
+
+@windows
+def test_windows_git_operands_keys_and_pointers(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    profile = tmp_path / "profile"
+    repo.mkdir()
+    _marker(repo / "in repo", b"in repository")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(profile))
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    target = repo / "in repo/é[1].md"
+    target.touch()
+    relative = r"in repo\é[1].md"
+    assert not Path(relative).exists() and target.exists()
+    assert names.git_arg(repo, relative) == names.git_arg(repo, target) == "in repo/é[1].md"
+    other = Path("Z:/" if repo.drive.upper() != "Z:" else "Y:/") / "elsewhere"
+    for bad in ("../outside", "..", r"\rooted", r"C:relative", r"\\?\C:\file", other):
+        with pytest.raises(ValueError):
+            names.git_arg(repo, bad)
+    assert names.relative_key(repo, target) == "in repo/é[1].md"
+    assert names.relative_key(repo, profile / "item", method="relpath") == "../profile/item"
+    with pytest.raises(ValueError):
+        names.relative_key(repo, profile)
+    surface = repo / "CLAUDE.md"
+    assert names.pointer_token(surface, target) == "in repo/é[1].md"
+    assert names.pointer_token(other / "surface", profile / "notes") == "~/notes"
+    assert names.pointer_token(surface, other) == str(other)
+    assert names.worktree_label_path(Path("A/.claude/worktrees/branch")) == "A/.claude/worktrees/branch"
+
+
+@windows
+def test_windows_porcelain_bytes(tmp_path):
+    # The integration lane supplies the output of git status --porcelain -z.
+    parser = names._backend().porcelain_paths
+    data = "R  new é[1]\0old -> é\0?? another é\0 C copied\0from\0".encode()
+    assert parser(tmp_path, data) == [("R ", tmp_path / "new é[1]"), ("??", tmp_path / "another é"),
+                                      (" C", tmp_path / "copied")]
+    assert parser(tmp_path, b"") == []
+    for invalid in (b"?? bad\xff\0", b"R  good\0bad\xff\0"):
+        with pytest.raises(UnicodeDecodeError):
+            parser(tmp_path, invalid)
+    for truncated in (b"?? path", b"R  new\0", b"M\0"):
+        with pytest.raises(ValueError):
+            parser(tmp_path, truncated)

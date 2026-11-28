@@ -10,7 +10,9 @@ from typing import Literal
 
 def _backend():
     if os.name == "nt":
-        raise NotImplementedError("native Windows names and folders are not implemented")
+        from . import _names_windows
+
+        return _names_windows
     from . import _names_posix
 
     return _names_posix
