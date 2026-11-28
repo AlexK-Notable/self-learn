@@ -342,6 +342,21 @@ def test_relative_keys_and_pointer_fallback(tmp_path, monkeypatch):
     assert compiled.load_record(tmp_path, "stored")["targets"]["CLAUDE.md#pointer"]["bytes"] == 31
 
 
+@posix
+def test_ledger_default_is_the_module_constant_read_at_call_time(tmp_path, monkeypatch):
+    """`ledger.resolve_home()` used to read `ledger.DEFAULT_HOME` on every
+    call. The facade keeps its own spelling of the default, so the
+    constant is passed through: a rebound constant must still take
+    effect, and the environment variable must still win over it."""
+    monkeypatch.delenv("SELF_LEARN_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "profile"))
+    assert ledger.resolve_home() == tmp_path / "profile" / ".self-learn"  # the shipped default
+    monkeypatch.setattr(ledger, "DEFAULT_HOME", str(tmp_path / "rebound"))
+    assert ledger.resolve_home() == tmp_path / "rebound"
+    monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "from-env"))
+    assert ledger.resolve_home() == tmp_path / "from-env"
+
+
 def test_windows_import_then_unsupported(tmp_path):
     sentinel = tmp_path / "sentinel"
     sentinel.write_bytes(b"original")

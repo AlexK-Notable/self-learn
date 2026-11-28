@@ -42,9 +42,9 @@ def component_path(root: Path, name: str, *, suffix: str = "") -> Path:
     return root / name
 
 
-def ledger_home(env: Mapping[str, str] | None = None) -> Path:
+def ledger_home(env: Mapping[str, str] | None = None, *, default: str = "~/.self-learn") -> Path:
     env = os.environ if env is None else env
-    return Path(env.get("SELF_LEARN_HOME") or "~/.self-learn").expanduser()
+    return Path(env.get("SELF_LEARN_HOME") or default).expanduser()
 
 
 def cache_root(env: Mapping[str, str] | None = None) -> Path:

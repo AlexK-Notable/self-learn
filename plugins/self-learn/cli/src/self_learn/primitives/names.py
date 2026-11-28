@@ -44,8 +44,8 @@ def component_path(root: Path, name: str, *, suffix: str = "") -> Path:
     return _backend().component_path(root, name, suffix=suffix)
 
 
-def ledger_home(env: Mapping[str, str] | None = None) -> Path:
-    return _backend().ledger_home(env)
+def ledger_home(env: Mapping[str, str] | None = None, *, default: str = "~/.self-learn") -> Path:
+    return _backend().ledger_home(env, default=default)
 
 
 def cache_root(env: Mapping[str, str] | None = None) -> Path:

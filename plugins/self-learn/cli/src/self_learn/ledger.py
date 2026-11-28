@@ -62,7 +62,7 @@ EXIT_NO_HOME = 5
 
 def resolve_home() -> Path:
     """Resolve the ledger home: $SELF_LEARN_HOME, else the default, expanded."""
-    return names.ledger_home()
+    return names.ledger_home(default=DEFAULT_HOME)
 
 
 def home_state(home: Path | str | None = None) -> str:
