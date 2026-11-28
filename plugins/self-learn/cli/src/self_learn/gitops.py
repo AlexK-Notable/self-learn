@@ -258,15 +258,23 @@ def _git(
     """One git call, always bounded. ``subprocess.run`` with no timeout is
     why "blocking with a sane timeout" was fiction (audit 2026-07-16)."""
     try:
-        if os.name == "nt" and _literal_paths.get():
-            args = ("--literal-pathspecs", *args)
+        if os.name == "nt":
+            from .primitives._capture_windows import git_argv
+
+            remote = args[:1] in (("push",), ("pull",))
+            if _literal_paths.get():
+                args = ("--literal-pathspecs", *args)
+            try:
+                argv = git_argv(repo, args)
+            except ValueError as exc:
+                raise GitOpsError(f"invalid Git arguments in {repo}: {exc}") from exc
+            if binary:
+                return procs.run_bounded(argv, timeout=timeout, binary=True)
+            if remote:
+                return procs.run_bounded(argv, timeout=timeout, env=_windows_push_env(repo))
+            return procs.run_command(argv, timeout=timeout)
         if binary:
             return procs.run_bounded(["git", "-C", str(repo), *args], timeout=timeout, binary=True)
-        if os.name == "nt" and args[:1] in (("push",), ("pull",)):
-            return procs.run_bounded(
-                ["git", "-C", str(repo), *args], timeout=timeout,
-                env=_windows_push_env(repo),
-            )
         return procs.run_command(
             ["git", "-C", str(repo), *args],
             timeout=timeout,
@@ -341,6 +349,10 @@ def stage(repo: Path, paths: Iterable[Path | str]) -> list[Path]:
     """``git add -- <existing touched paths>`` — targeted staging, never
     ``-A``. Vanished paths (deletions pre-staged by git mv/rm, or
     untracked-and-gone) are skipped. Returns what was actually staged."""
+    if os.name == "nt":
+        from .primitives._capture_windows import git_operand
+
+        paths = [repo / git_operand(repo, path) for path in paths]
     existing = [Path(p) for p in paths if Path(p).exists()]
     if existing:
         _git_ok(repo, "add", "--", *[names.git_arg(repo, p) for p in existing])
@@ -484,6 +496,11 @@ def commit_lock_path(repo: Path) -> Path:
     # absolute spelling, a symlinked worktree) used to key differently,
     # so an inner acquire could read as outermost. Resolving once here
     # keeps every caller's key identical for the same real file.
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        lock = checked_path(gitdir, gitdir / "self-learn.commit.lock")
+        checked_path(gitdir, lock.with_name(lock.name + ".lck"))
     return (gitdir / "self-learn.commit.lock").resolve()
 
 
@@ -564,6 +581,10 @@ def host_lock_path(path: Path, mode: str) -> Path:
     (and into its one shared ``info/exclude``) shared none. The mode is
     not read from here: this only chooses where the lock FILE lives. A
     path with no ``.git`` above it never runs git at all (PLAIN4)."""
+    if os.name == "nt" and mode == "plain":
+        from .primitives._capture_windows import verify_project
+
+        verify_project(names.ledger_home(), path)
     if mode == "git":
         return commit_lock_path(Path(path))
     if mode == "plain":
@@ -582,6 +603,11 @@ def host_lock_path(path: Path, mode: str) -> Path:
 
         app_root = names.cache_root()
         slug = slug_for(path)
+        if os.name == "nt":
+            from .primitives._capture_windows import checked_path
+
+            metadata = checked_path(app_root, app_root / f"host-{slug}.commit.lock")
+            checked_path(app_root, metadata.with_name(metadata.name + ".lck"))
         return app_root / f"host-{slug}.commit.lock"
     raise GitOpsError(f"unknown host mode {mode!r} — expected 'git' or 'plain'")
 
@@ -620,6 +646,10 @@ def known_paths(repo: Path, paths: Iterable[Path | str]) -> list[str]:
     across two commits. Conversely a pathspec naming a never-tracked absent
     path makes git fail the whole commit ("did not match any file(s) known
     to git"), so unknown paths are dropped rather than passed through."""
+    if os.name == "nt":
+        from .primitives._capture_windows import git_operand
+
+        paths = [repo / git_operand(repo, path) for path in paths]
     out: list[str] = []
     for raw in paths:
         p = Path(raw)
@@ -796,7 +826,9 @@ def porcelain_paths(repo: Path) -> list[tuple[str, Path]]:
     (the miner's very first landing into a new project bucket is exactly
     that case, and a directory pathspec would over-commit)."""
     if os.name == "nt":
-        raise NotImplementedError("native Windows Git status paths are not implemented")
+        from .primitives._capture_windows import status_paths
+
+        return status_paths(repo, timeout=GIT_LOCAL_TIMEOUT)
     proc = _git(repo, "status", "--porcelain", "-uall")
     if proc.returncode != 0:
         raise GitOpsError(
@@ -1042,6 +1074,11 @@ def ensure_excluded(repo: Path, patterns: Iterable[str]) -> bool:
     if not wanted:
         return False
     with commit_lock(repo):
+        if os.name == "nt":
+            from .primitives._capture_windows import checked_path
+
+            common = commit_lock_path(repo).parent
+            checked_path(common, common / "info" / "exclude")
         exclude = git_path(repo, "info/exclude")
         try:
             text = exclude.read_text(encoding="utf-8")

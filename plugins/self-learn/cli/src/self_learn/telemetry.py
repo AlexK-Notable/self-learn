@@ -120,8 +120,19 @@ def _cache_base() -> Path:
     return cache_dir()
 
 
+def _checked_spool_path(root: Path, path: Path) -> Path:
+    from .primitives._capture_windows import checked_path
+
+    try:
+        return checked_path(root, path)
+    except ValueError as exc:
+        raise TelemetryError(str(exc)) from exc
+
+
 def spool_dir() -> Path:
     """The spool directory, XDG-resolved at call time (tests redirect it)."""
+    if os.name == "nt":
+        return _checked_spool_path(names.cache_root(), names.home_cache() / "spool")
     return _cache_base() / "spool"
 
 
@@ -129,6 +140,8 @@ def rejected_dir() -> Path:
     """Cache-only home of spool lines the secret scan refused at flush
     (2026-09-28, fail-state audit finding 13): never the ledger, never
     flushed, kept so a person can look at what was held back."""
+    if os.name == "nt":
+        return names.cache_root() / "private"
     return _cache_base() / "spool-rejected"
 
 
@@ -210,9 +223,24 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
         event[key] = value
     line = json.dumps(event, separators=(",", ":"), sort_keys=True)
 
-    path = names.component_path(spool_dir(), f"{_month(now)}.{actor()}.jsonl")
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        try:
+            spool = spool_dir()
+            actor_name = event["actor"]
+            names.component_path(spool, actor_name)
+            path = names.component_path(spool, f"{_month(now)}.{actor_name}.jsonl")
+            checked_path(names.cache_root(), path.with_name(path.name + ".lck"))
+            _cache_base()
+        except ValueError as exc:
+            raise TelemetryError(str(exc)) from exc
+    else:
+        path = names.component_path(spool_dir(), f"{_month(now)}.{actor()}.jsonl")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
+        if os.name == "nt":
+            fh.reconfigure(newline="\n")
         lease = locks.acquire(fh.fileno(), path=path, wait=None)
         try:
             fh.write(line + "\n")
@@ -312,19 +340,24 @@ class FlushReport:
         return f"telemetry flush: {self.events} event{plural} → {names}" + held
 
 
-def _hold_back(spool_path: Path, fh: BinaryIO, kept: list[str], refused: list[str]) -> None:
+def _hold_back(spool_path: Path, fh: BinaryIO, kept: list[str], refused: list[str],
+               *, private_target: Path | None = None) -> None:
     """Move *refused* spool lines to the cache-only rejected file, then
     rewrite the spool (*fh*, whose flock the caller holds) with *kept*
     only (2026-09-28, fail-state audit finding 13). Both files live in
     the XDG cache, never the ledger. Rejected file FIRST: a crash in
     between leaves a line in both places (held back again next time),
     never in neither."""
-    target = names.component_path(rejected_dir(), spool_path.name)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "a", encoding="utf-8") as out:
-        out.write("\n".join(refused) + "\n")
-        out.flush()
-        fsops.flush_file(out.fileno())
+    if os.name == "nt":
+        assert private_target is not None
+        fsops.private_write(private_target, "\n".join(refused) + "\n")
+    else:
+        target = names.component_path(rejected_dir(), spool_path.name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8") as out:
+            out.write("\n".join(refused) + "\n")
+            out.flush()
+            fsops.flush_file(out.fileno())
     fh.seek(0)
     fh.truncate()
     if kept:
@@ -387,11 +420,21 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
     if not sdir.is_dir():
         return report
 
+    if os.name == "nt":
+        targets: dict[Path, Path] = {}
+        line_numbers: dict[Path, list[int]] = {}
+        quarantines: dict[Path, tuple[Path, list[str], list[str]]] = {}
     opened: list[tuple[Path, BinaryIO, list[str], locks.Lease]] = []
     try:
         # Phase 1: lock every spool file and scan every line. Nothing is
         # written until every line of every file has passed.
         for spool_path in sorted(sdir.glob("*.jsonl")):
+            if os.name == "nt":
+                _checked_spool_path(names.cache_root(), spool_path)
+                _checked_spool_path(names.cache_root(), spool_path.with_name(spool_path.name + ".lck"))
+                targets[spool_path] = _checked_spool_path(home, telemetry_dir(home) / spool_path.name)
+                line_numbers[spool_path] = []
+                physical_line = 0
             try:
                 fh = open(spool_path, "r+b")
             except (FileNotFoundError, OSError):
@@ -412,11 +455,16 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             lines: list[str] = []
             for raw_line in fh.read().split(b"\n"):
                 try:
+                    if os.name == "nt":
+                        physical_line += 1
+                        raw_line = raw_line.removesuffix(b"\r")
                     ln = raw_line.decode("utf-8")
                 except UnicodeDecodeError:
                     continue
                 if ln.strip():
                     lines.append(ln)
+                    if os.name == "nt":
+                        line_numbers[spool_path].append(physical_line)
             opened.append((spool_path, fh, lines, lease))
         for index, (spool_path, fh, lines, lease) in enumerate(opened):
             kept: list[str] = []
@@ -426,13 +474,36 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 if hits:
                     refused.append(line)
                     rules = ", ".join(sorted({hit.rule for hit in hits}))
+                    if os.name == "nt":
+                        i = line_numbers[spool_path][i - 1]
                     report.rejected.append(f"{spool_path.name}:{i}: {rules}")
                 else:
                     kept.append(line)
             if not refused:
                 continue
+            if os.name == "nt":
+                # Each batch gets a new file. No read/append to a legacy file
+                # with unknown permissions, and no collision between ledgers.
+                target = _checked_spool_path(names.cache_root(), rejected_dir() /
+                                             f"spool-{secrets.token_hex(16)}.jsonl")
+                quarantines[spool_path] = target, kept, refused
+                continue
             _hold_back(spool_path, fh, kept, refused)
             opened[index] = (spool_path, fh, kept, lease)
+        if os.name == "nt" and quarantines:
+            try:
+                # Create once, verify again before publishing another batch:
+                # a formerly private directory may have been replaced.
+                fsops.ensure_private_parent(rejected_dir())
+                for index, (spool_path, fh, lines, lease) in enumerate(opened):
+                    if spool_path in quarantines:
+                        target, kept, refused = quarantines[spool_path]
+                        _hold_back(spool_path, fh, kept, refused, private_target=target)
+                        opened[index] = (spool_path, fh, kept, lease)
+                        print(f"self-learn: held lines from {spool_path} saved to {target}", file=sys.stderr)
+            except OSError as exc:
+                raise ScanRefusal(f"cannot finish private quarantine ({exc}). Inspect the remaining "
+                                  f"spool lines: {', '.join(report.rejected)}") from exc
         if report.rejected:
             print(
                 "self-learn: telemetry flush held back "
@@ -482,9 +553,14 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 for spool_path, fh, lines, lease in opened:
                     if not lines:
                         continue
-                    target = names.component_path(telemetry_dir(home), spool_path.name)
+                    if os.name == "nt":
+                        target = targets[spool_path]
+                    else:
+                        target = names.component_path(telemetry_dir(home), spool_path.name)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with open(target, "a+", encoding="utf-8") as out:
+                        if os.name == "nt":
+                            out.reconfigure(newline="\n")
                         target_lease = locks.acquire_ledger_target(out.fileno())
                         try:
                             # Heal a torn trailing line from a previous
@@ -567,7 +643,14 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
 
     if report.files and push:
         try:
-            gitops.push_pending(home)
+            if os.name == "nt":
+                from .primitives.capabilities import hint
+
+                result = gitops.push_pending(home)
+                if not result.ok and not result.intent_stopped:
+                    sys.stderr.write(hint("push"))
+            else:
+                gitops.push_pending(home)
         except gitops.GitOpsError as exc:
             print(
                 f"self-learn: telemetry flush committed but not pushed ({exc})",

@@ -53,6 +53,57 @@ jobs:
         working-directory: plugins/self-learn/ui
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
 
+      - name: Native capture integration
+        working-directory: plugins/self-learn/cli
+        run: |
+          $env:WIN_PD_OVERRIDE_LOCAL_APPDATA = Join-Path $env:RUNNER_TEMP "capture-local"
+          $env:WIN_PD_OVERRIDE_APPDATA = Join-Path $env:RUNNER_TEMP "capture-roaming"
+          $expected = @(
+            'test_cross_drive_pointer_and_git_rejection'
+            'test_foreign_registry_is_readable_and_preserved'
+            'test_registration_reads_registry_under_shared_lock'
+            'test_flagged_spool_uses_verified_private_quarantine'
+            'test_committed_receipt_survives_cache_junction[cache]'
+            'test_committed_receipt_survives_cache_junction[spool]'
+            'test_flush_preflights_all_targets'
+            'test_plain_teach_pushes_to_local_remote[fast-forward]'
+            'test_plain_teach_pushes_to_local_remote[remote-moved]'
+            'test_windows_git_error_contracts'
+            'test_first_capture_heals_missing_project_meta'
+            'test_repair_hints_follow_capabilities_and_statement_captures'
+            'test_capability_table_matches_parser'
+            'test_refusal_profile_precedes_dispatch'
+            'test_background_kicks_refuse_before_settings'
+            'test_two_powershell_processes_share_committed_capture[default]'
+            'test_two_powershell_processes_share_committed_capture[utf8]'
+            'test_worktrees_and_modes_share_commit_lock'
+            'test_recovery_after_killed_writer'
+            'test_concurrent_flush_and_append'
+            'test_git_excludes_trailing_space'
+            'test_readonly_and_creating_cache_have_same_path'
+            'test_component_rejects_invalid_actor_without_creating_spool'
+            'test_static_junction_escape_refused'
+            'test_git_tree_keys_and_literal_pathspec_with_unrelated_index_entry'
+            'test_existing_buckets_roundtrip_without_rekey'
+            'test_init_repairs_local_config_before_recovery'
+          )
+          foreach ($version in '3.12', '3.13') {
+            if ($version -eq '3.13') {
+              $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "capture-env-313"
+              uv sync --locked --python $version
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            }
+            $report = Join-Path $env:RUNNER_TEMP "capture-$version.xml"
+            uv run --python $version --no-sync python -m pytest tests/test_windows_capture.py tests/test_platform_integration.py -p no:cacheprovider -o xfail_strict=true -q -rA --junitxml=$report
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+            $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+            $skipped = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+            if ((Compare-Object -CaseSensitive $expected $ran) -or $skipped.Count -ne 1 -or $skipped[0].name -cne 'test_linux_teach_never_imports_capabilities' -or $skipped[0].skipped.message -cne 'Linux capture contract') {
+              throw "Unexpected capture selection or skip: $ran"
+            }
+          }
+
       - name: Windows observer hook tests
         working-directory: plugins/self-learn/cli
         run: |
@@ -286,18 +337,19 @@ jobs:
           }
           $lines
 
-      - name: CLI import probe (expected to fail until Windows port lands)
+      - name: Native CLI import, help and refusal
         working-directory: plugins/self-learn/cli
-        continue-on-error: true
         run: |
           uv run --no-sync python -c "import self_learn.cli"
-          $rc = $LASTEXITCODE
-          if ($rc -eq 0) {
-            "### Windows CLI import probe`n`n- **Status:** ``self_learn.cli`` imports cleanly on Windows." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          } else {
-            "### Windows CLI import probe`n`n- **Status:** ``self_learn.cli`` does **not** import on Windows yet (expected until Unix-only imports such as ``fcntl`` are ported; exit code $rc)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv run --no-sync self-learn --help
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $errFile = Join-Path $env:RUNNER_TEMP "capture-refusal.txt"
+          $out = uv run --no-sync self-learn status 2>$errFile
+          if ($LASTEXITCODE -ne 1 -or $out -or (Get-Content $errFile -Raw).TrimEnd() -cne 'self-learn status: unavailable in Windows capture mode') {
+            throw "Unexpected native CLI refusal"
           }
-          exit $rc
+          exit 0
 
   linux-floor:
     runs-on: ubuntu-latest

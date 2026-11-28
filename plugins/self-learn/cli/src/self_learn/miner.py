@@ -2623,6 +2623,8 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
     the EXACT SAME condition a spawn would have, and nothing else. With
     no live daemon, every leg below is byte-identical to before this
     unit."""
+    if os.name == "nt":
+        return "disabled"
     # U-settings Phase 1: both switches resolve through the registry
     # (`miner.enabled` / `miner.autokick`, config.yaml > env > `True` --
     # U-flip 2026-09-01, S-58: config wins).

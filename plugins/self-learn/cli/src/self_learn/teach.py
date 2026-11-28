@@ -74,6 +74,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import re
 import shlex
 import sys
@@ -440,10 +441,21 @@ def _capture_txn(
                 f"-m {message!r})",
                 file=sys.stderr,
             )
+            if os.name == "nt":
+                from .primitives.capabilities import hint
+
+                sys.stderr.write(hint("reconcile"))
             return path, False
     if not no_push:
         try:
-            gitops.push_pending(home)
+            if os.name == "nt":
+                from .primitives.capabilities import hint
+
+                push = gitops.push_pending(home)
+                if not push.ok and not push.intent_stopped:
+                    sys.stderr.write(hint("push"))
+            else:
+                gitops.push_pending(home)
         except gitops.GitOpsError as exc:
             # The commit is safe; only publication failed. Loud, not fatal —
             # `self-learn push` republishes it (unlike an uncommitted record,
@@ -453,6 +465,10 @@ def _capture_txn(
                 "`self-learn push` to publish it",
                 file=sys.stderr,
             )
+            if os.name == "nt":
+                from .primitives.capabilities import hint
+
+                sys.stderr.write(hint("push"))
     return path, True
 
 
@@ -544,6 +560,16 @@ def _run_teach(args: argparse.Namespace) -> int:
 def _statement_retry_hint(statement: str, message_ref: str) -> str:
     """The one command that records the statement alone; the lesson is
     already written, so teach must not be run again."""
+    if os.name == "nt":
+        from .primitives.capabilities import hint
+
+        clause = hint("statement").rstrip()
+        if clause:
+            return _statement_retry_text(statement, message_ref) + "\n" + clause
+    return _statement_retry_text(statement, message_ref)
+
+
+def _statement_retry_text(statement: str, message_ref: str) -> str:
     return (
         "  Do not run teach again (the lesson is already written). To record "
         "the statement alone:\n"
