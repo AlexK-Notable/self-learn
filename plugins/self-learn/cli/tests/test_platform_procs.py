@@ -1015,8 +1015,9 @@ def test_stuck_pipe_has_bounded_cleanup(monkeypatch, tmp_path, mode):
     real_create = win32process.CreateProcess
     ready = tmp_path / "holding"
     retained = []
-    ready_at = time.monotonic()
+    ready_at = None
     def create(*args):
+        nonlocal ready_at
         current = win32api.GetCurrentProcess()
         child_end = args[-1].hStdInput if mode == "writer" else args[-1].hStdOutput
         spare = win32api.DuplicateHandle(current, child_end, current, 0, True,
@@ -1040,6 +1041,7 @@ def test_stuck_pipe_has_bounded_cleanup(monkeypatch, tmp_path, mode):
             retained.append(holder)
             _wait_for(lambda: ready.exists() or holder.poll() is not None)
             assert ready.is_file()
+            ready_at = time.monotonic()
         finally:
             win32api.CloseHandle(spare)
         return real_create(*args)
