@@ -487,6 +487,12 @@ jobs:
           $native = @(
             'test_evaluate_program_deny_warn_allow'
             'test_evaluate_program_fails_closed_on_an_unusable_rule'
+            'test_evaluate_the_registration_not_the_file_chooses_the_policy'
+            'test_evaluate_exit_status_survives_a_broken_output_pipe[deny-stderr]'
+            'test_evaluate_exit_status_survives_a_broken_output_pipe[warn-stdout]'
+            'test_evaluate_exit_status_survives_a_broken_output_pipe[deny-stdout]'
+            'test_evaluate_exit_status_survives_a_broken_output_pipe[warn-stderr]'
+            'test_evaluate_a_caller_that_holds_stdin_open_is_bounded'
             'test_evaluate_program_is_fast_and_loads_no_ledger_or_sdk'
             'test_windows_activate_writes_the_rule_and_an_exec_form_entry'
             'test_windows_reactivate_changes_nothing'
@@ -504,12 +510,35 @@ jobs:
             'test_windows_a_failed_write_rolls_back_everything[rule]'
             'test_windows_a_missing_hook_program_refuses_and_writes_nothing'
             'test_windows_a_guard_from_the_previous_emitter_activates'
+            'test_windows_doctor_judges_each_guards_own_registration[placed-only]'
+            'test_windows_doctor_judges_each_guards_own_registration[event]'
+            'test_windows_doctor_judges_each_guards_own_registration[args]'
+            'test_windows_doctor_judges_each_guards_own_registration[unsupported]'
+            'test_windows_doctor_judges_each_guards_own_registration[retired]'
+            'test_windows_a_reference_self_learn_did_not_write_blocks_both_verbs[rule=]'
+            'test_windows_a_reference_self_learn_did_not_write_blocks_both_verbs[moved]'
+            'test_windows_a_reference_self_learn_did_not_write_blocks_both_verbs[shell]'
+            'test_windows_activation_undo_never_leaves_an_entry_without_its_rule[works]'
+            'test_windows_activation_undo_never_leaves_an_entry_without_its_rule[fails]'
+            'test_windows_deactivation_undo_puts_the_rule_back_first[works]'
+            'test_windows_deactivation_undo_puts_the_rule_back_first[fails]'
+            'test_windows_misshapen_settings_fail_the_doctor_and_refuse_activation[handlers-int]'
+            'test_windows_misshapen_settings_fail_the_doctor_and_refuse_activation[item-int]'
+            'test_windows_misshapen_settings_fail_the_doctor_and_refuse_activation[hooks-list]'
+            'test_windows_a_crlf_checkout_is_the_approved_script_and_other_edits_are_not'
+            'test_windows_a_reformatted_rule_is_a_hand_edit_for_both_verbs'
+            'test_windows_validation_and_replay_spawn_no_program'
+            'test_windows_a_regenerated_warning_refreshes_its_rule_file'
+            'test_windows_a_rule_left_behind_is_found_and_refreshed'
+            'test_windows_route_instructions_name_the_rule_and_the_program'
+            'test_windows_activation_requires_its_own_exact_registration'
           )
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
           $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
           $missing = @($native | Where-Object { $ran -cnotcontains $_ })
-          $unexpected = @($skips | Where-Object { $_.skipped.message -cne 'Linux differential: runs the generated Bash script' })
-          if ($missing.Count -or $ran.Count -ne 19 -or $skips.Count -ne 7 -or $unexpected.Count) {
+          $allowed = @('Linux differential: runs the generated Bash script', 'a symlink needs a privilege on Windows')
+          $unexpected = @($skips | Where-Object { $allowed -cnotcontains $_.skipped.message })
+          if ($missing.Count -or $ran.Count -ne 47 -or $skips.Count -ne 15 -or $unexpected.Count) {
             throw "Unexpected hook activation selection: ran $($ran -join ', '); missing $($missing -join ', '); skipped $($skips.Count), unexpected $($unexpected.Count)"
           }
 

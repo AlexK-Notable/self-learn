@@ -1216,3 +1216,24 @@ def test_windows_route_instructions_name_the_rule_and_the_program(win):
     text = "\n".join(verbs._hook_manual_steps(snippet, name, record_id=RID))
     assert ".rule.json rule file" in text and "self-learn-hook.exe" in text
     assert "symlink" not in text
+
+
+@windows
+def test_windows_activation_requires_its_own_exact_registration(win, monkeypatch):
+    """M4: activation succeeds only when its own record's entry is in
+    settings.json as written; a settings write that lost it (the doctor's
+    row as a whole would pass, the guard only placed) is undone."""
+    win.seed(RID, DENY, DENY_EXAMPLES)
+    seed = _seed_settings(win)
+    before = win.snapshot()
+    real = hook_activation._render_settings
+
+    def losing(data, bom, crlf):
+        kept = json.loads(json.dumps(data))
+        kept["hooks"]["PreToolUse"] = kept["hooks"]["PreToolUse"][:1]  # the foreign entry only
+        return real(kept, bom, crlf)
+
+    monkeypatch.setattr(hook_activation, "_render_settings", losing)
+    rc, _, err = win.code("hook", "activate", RID, "--no-push")
+    assert rc == 1 and "did not verify as live" in err and "placed but not registered" in err, err
+    assert win.snapshot() == before and win.settings.read_bytes() == seed
