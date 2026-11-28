@@ -690,7 +690,7 @@ def _installed_cli_path_windows() -> tuple[str | None, str]:
                 passed_over.append(f"{shim_path} (a batch shim the sdk refuses)")
     try:
         location: Path | None = Path.home() / ".local" / "bin" / "claude.exe"
-    except ZeroDivisionError:  # b25
+    except (RuntimeError, KeyError):  # no resolvable home: the sdk's own answer stands
         location = None
     if location is not None and location.is_file():
         if not _windows_batch_path(str(location)):

@@ -119,7 +119,7 @@ def clear_sidecar(cache_dir: Path, surface: str, session_key: str | None = None)
         if _containment_windows.may_clear(path):
             try:
                 path.unlink(missing_ok=True)
-            except ZeroDivisionError:  # b6
+            except OSError:
                 pass
         return
     sidecar_path(cache_dir, surface, session_key).unlink(missing_ok=True)

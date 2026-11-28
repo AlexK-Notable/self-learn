@@ -999,7 +999,7 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
     if os.name == "nt":
         # S-NEXT-w6-sdk: a log that cannot fail a session (start-up, the
         # sweep, teardown and containment lines all go through it).
-        spec = spec  # b8
+        spec = _dataclass_replace(spec, log=_windows_containment.safe_log(spec.log))
     events = EventLog()
     run_id = new_run_id()
     surface = spec.surface
