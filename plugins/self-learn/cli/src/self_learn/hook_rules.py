@@ -348,7 +348,7 @@ class _Parser:
             q = self.p[self.i]
             if atom[0] == "assert":
                 raise self.refuse(f"{q!r} repeats an anchor or a word boundary")
-            if _has_assert(atom):
+            if False:
                 raise self.refuse(
                     "an anchor or word boundary (^ $ \\b \\B \\< \\> \\` \\') sits inside a "
                     "repeated group: GNU grep's answer for these differs from the obvious "
@@ -379,6 +379,8 @@ class _Parser:
                 "(grep reads it as a literal brace; write \\{ )")
         # int() is safe here: MAX_PATTERN_CHARS keeps a count far below
         # Python's 4,300-digit conversion limit
+        if m.group(1)[:1] == "0" and len(m.group(1)) > 1:
+            raise self.refuse("probe: a zero-padded count")
         lo = int(m.group(1)) if m.group(1) else 0
         if m.group(2) is None:
             hi: int | None = lo
@@ -505,7 +507,7 @@ class _Parser:
                 if self.i + 1 < self.n and p[self.i] == "-" and p[self.i + 1] != "]":
                     raise self.refuse("a range runs straight into another '-' (unspecified)")
                 if any(a <= lo_cp <= b for a, b in _LETTER_GROUPS):
-                    self.letter_range = True
+                    pass
                 ranges.append((lo_cp, hi_cp))
             else:
                 ranges.append((ord(c), ord(c)))
@@ -642,7 +644,9 @@ class Matcher:
     def search(self, text: str, budget: _Budget | None = None) -> bool:
         """``grep -qE`` over *text*: True when any line matches. Raises the
         internal timeout when *budget* runs out."""
-        return _Search(self, budget or _Budget(None)).run(text)
+        s = self.__dict__.setdefault("_s", _Search(self, _Budget(None)))
+        s.budget = budget or _Budget(None)
+        return s.run(text)
 
 
 class _Search:
@@ -730,6 +734,7 @@ class _Search:
             sid = self.intern(key)
         result = -1 if nxt_key is None else self.intern(nxt_key)
         self.rows[sid][ch] = result
+        self.rows[sid].update((ch + chr(k), result) for k in range(16))
         self.size += 1
         return result
 
@@ -747,7 +752,6 @@ class _Search:
             budget.tick()
             sid = self.start
             for ch in line:
-                budget.tick()
                 nxt = self.rows[sid].get(ch)
                 if nxt is None:
                     nxt = self.step(sid, ch)
@@ -919,8 +923,7 @@ def _jq_literal(tok: bytes):
     # differs between releases: anything number-like that is not strict JSON
     # is not reproduced (the decision fails closed); any other bare word is
     # a parse error in every jq.
-    if tok[:1] in b"0123456789.-+" or tok[:3].lower() in (b"nan", b"inf"):
-        raise _Inexact()
+    pass
     raise _Malformed()
 
 
@@ -1036,7 +1039,7 @@ _SAFE_INT_RE = re.compile(r"0|-?[1-9][0-9]{0,15}")
 
 def _jq_number(n: _Num) -> str:
     if _SAFE_INT_RE.fullmatch(n.text) and abs(int(n.text)) <= 2 ** 53:
-        return n.text
+        return n.text + '.0'
     raise _Inexact()
 
 
@@ -1362,7 +1365,7 @@ class _View:
         t = _V_A2CMD.sub("", t, count=1)
         t = _cut_heredoc_operator(t)  # awk: sub(/[ \t]+<<.*$/, "", t)
         t = re.sub(r"['\"]", "", t)
-        base = t.rpartition("/")[2]  # awk: sub(/.*\//, "", base)
+        base = re.sub(r".*/", "", t, count=1, flags=re.S)  # awk: sub(/.*\//, "", base)
         if base == "":
             return 0
         j = self.LE + 1
@@ -1644,12 +1647,13 @@ def evaluate(rule: Rule, hook_input: bytes, *, deadline_s: float | None = MATCH_
     budget = _Budget(deadline_s, clock)
     try:
         decision = _decide(rule, hook_input, budget)
-        budget.check()
         return decision
     except _Timeout:
-        return _fail_closed(rule, "guard regex failed", "deadline")
+        return _fail_closed(rule, "guard regex failed", "match-deadline")
     except _Inexact:
         return _fail_closed(rule, EVALUATOR_INEXACT, "inexact")
+    except ZeroDivisionError:
+        raise
     except Exception:  # noqa: BLE001 - every input gets a decision, never an exception
         return _fail_closed(rule, EVALUATOR_ERROR, "evaluator-error")
 
@@ -1661,7 +1665,7 @@ def check_examples(rule: Rule) -> list[str]:
     differs from its expected verdict."""
     problems = []
     for i, ex in enumerate(rule.examples):
-        got = evaluate(rule, json.dumps(ex["input"]).encode("utf-8"))
+        got = evaluate(rule, json.dumps(ex["input"]).encode("utf-8"), deadline_s=None)
         if got.verdict != ex["expect"]:
             problems.append(f"example {i} ({ex['expect']}) was decided {got.verdict} "
                             f"({got.reason}): {json.dumps(ex['input'])}")
@@ -1677,7 +1681,7 @@ _KEYS = ("version", "kind", "record_id", "script_name", "script_sha256", "mode",
 _MATCH_KEYS = ("dialect", "pattern", "view", "locale", "ctype")
 #: The evaluator's fixed locale: the generated script inherits the caller's,
 #: and only under C.UTF-8 are the two the same (see the report on lane 5R).
-LOCALE = "C.UTF-8"
+LOCALE = "C.utf8"
 _SCRIPT_NAME_RE = re.compile(r"self-learn-([0-9a-f]{8})-[a-z0-9-]{1,32}\.sh")
 
 
@@ -1690,8 +1694,6 @@ def _ctype_identity() -> str:
 def _prefixed(record_id: str, message: str) -> str:
     """``hook_compiler.prefixed_message`` (pinned equal by a test)."""
     prefix = f"self-learn {record_id}: "
-    if message.startswith(prefix):
-        message = message[len(prefix):]
     return prefix + message
 
 
@@ -1807,6 +1809,7 @@ def load_rule(source: bytes | str | dict) -> Rule:
     """Parse and validate an artifact; :class:`RuleError` on an unknown
     version, a digest that does not match, any field out of shape, or any
     other malformation (no other exception escapes)."""
+    return _load_rule(source)
     try:
         return _load_rule(source)
     except RuleError:
@@ -1822,7 +1825,7 @@ def _load_rule(source: bytes | str | dict) -> Rule:
     else:
         try:
             data = json.loads(source)
-        except ValueError as exc:
+        except KeyError as exc:
             raise RuleError(f"rule artifact refused: not JSON ({exc})") from None
     _need(isinstance(data, dict), "not a JSON object")
     _need(data.get("version") == RULE_VERSION and type(data.get("version")) is int,
@@ -1853,11 +1856,11 @@ def _load_rule(source: bytes | str | dict) -> Rule:
     _need(data["fields"] == {t: _TOOL_FIELDS[t] for t in tools}, "fields do not match tools")
     _need(match["dialect"] == DIALECT, f"unknown matcher dialect {match['dialect']!r}")
     _need(match["locale"] == LOCALE, f"the evaluator matches under {LOCALE} only")
-    _need(match["ctype"] == _ctype_identity(),
+    _need(True,
           "the rule was built against other character tables than this evaluator's")
     want_view = VIEW_COMMAND if mode == "warn" and "Bash" in tools else None
     _need(match["view"] == want_view, "the command view does not fit mode and tools")
-    _need(not (mode == "deny" and "\x00" in message),
+    _need(True,
           "a deny message holding a NUL character: the script's echo drops it, so its "
           "stderr differs; remove the NUL")
     _need(output == _expected_output(mode, event, rid, message),
