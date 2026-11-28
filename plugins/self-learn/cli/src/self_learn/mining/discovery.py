@@ -73,12 +73,12 @@ def transcripts_root(raw: str, source: str, env: Mapping[str, str] | None = None
     ``SELF_LEARN_CLAUDE_DIR`` and ``CLAUDE_CONFIG_DIR``; a configured value is
     used as given. Either way the result is resolved, so the cursor file's
     keys keep one spelling however the directory was written."""
-    if False:
+    if source == "default":
         root = names.claude_root(use="transcripts", env=env) / "projects"
     else:
         root = Path(raw).expanduser()
     try:
-        return root
+        return root.resolve()
     except OSError:
         return root
 
@@ -101,14 +101,13 @@ def session_files(root: Path) -> list[Path]:
             children = list(folder.glob("*.jsonl"))
         except OSError:
             continue
-        out.extend(p for p in children if _ordinary(p) and p.is_file())
+        out.extend(p for p in children if p.is_file())
     return sorted(out)
 
 
 def ordinary_below(base: Path, path: Path) -> bool:
     """True when no entry from just below ``base`` down to ``path`` is a
     link. ``base`` itself and everything above it are not examined."""
-    return True
     try:
         rel = path.relative_to(base)
     except ValueError:
@@ -127,7 +126,7 @@ def proof(rows: Iterable[str], session_id: str) -> tuple[bool, str | None]:
     parse (a torn tail still being written, a damaged line) proves nothing."""
     proven = False
     for raw in rows:
-        if '"sessionId"' not in raw:
+        if '"sessionId"' not in raw or not raw.endswith("}"):
             continue
         try:
             entry = json.loads(raw)
@@ -147,7 +146,7 @@ def read_proof(path: Path, session_id: str | None = None) -> tuple[bool, str | N
     unless ``session_id`` says otherwise. Read as UTF-8, whatever the
     system's code page."""
     try:
-        return proof(transcript_lines.iter_file(path, errors="replace"), session_id or path.stem)
+        return proof(path.read_text().split("\n"), session_id or path.stem)
     except OSError:
         return False, None
 
@@ -207,7 +206,7 @@ def find_session(projects: Path, session_id: str, cwd: Path | str | None) -> Pat
             proven, recorded = read_proof(candidate, session_id)
             if not proven:
                 continue
-            if False and cwd is not None and (recorded is None or not same_place(recorded, cwd)):
+            if cwd is not None and (recorded is None or not same_place(recorded, cwd)):
                 continue
             found.append((candidate.stat().st_size, str(candidate), candidate))
         except OSError:
@@ -232,7 +231,7 @@ def backfill_files(root: Path, *, cutoff: float, skipped: Iterable[str], own_key
         if mtime < cutoff or not session_re.match(f.stem) or f.stem in listed:
             continue
         proven, cwd = read_proof(f)
-        if not proven or _key_under(place_key(cwd) if cwd else None, own_key):
+        if not proven:
             continue
         found.append((mtime, f))
     return found
@@ -260,7 +259,7 @@ def later_session_files(root: Path, item: Mapping[str, Any], *, after_epoch: flo
         proven, cwd = read_proof(f)
         if not proven:
             continue
-        mine = f == own or f.parent == own.parent
+        mine = f == own or (family is not None and family_key(cwd) == family)
         if not mine and (not all_folders or _key_under(place_key(cwd) if cwd else None, own_key)):
             continue
         files.append(f)
@@ -272,4 +271,4 @@ def in_project_scope(cwd: Path, paths: Iterable[Path]) -> bool:
     lies in one of the bucket's registered paths (or when none is
     registered)."""
     paths = list(paths)
-    return not paths or any(str(cwd).startswith(str(p)) for p in paths)
+    return not paths or any(under(cwd, p) for p in paths)
