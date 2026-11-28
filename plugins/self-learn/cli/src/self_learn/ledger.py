@@ -62,6 +62,8 @@ EXIT_NO_HOME = 5
 
 def resolve_home() -> Path:
     """Resolve the ledger home: $SELF_LEARN_HOME, else the default, expanded."""
+    if os.name == "nt":
+        return names.ledger_home(default=DEFAULT_HOME).absolute()
     return names.ledger_home(default=DEFAULT_HOME)
 
 
@@ -295,13 +297,27 @@ def _configure_windows_ledger(root: Path) -> None:
         if current.returncode or current.stdout.strip() != value:
             gitops._git_ok(root, "config", "--local", key, value)
     entries = git_bytes(root, "ls-files", "--eol", "-z", timeout=gitops.GIT_LOCAL_TIMEOUT)
+    # Include prospective paths: an empty ledger can already carry a *.md
+    # eol rule, before it has a record for ls-files --eol to describe.
+    paths = [b"hosts.yaml", b"user-statements.jsonl", b"user/pending/lrn-00000000.md",
+             b"projects/project/meta.yaml", b"projects/project/pending/lrn-00000000.md",
+             b"skills/skill/pending/lrn-00000000.md", b"telemetry/month.actor.jsonl"]
     for entry in entries.split(b"\0"):
         if entry:
             eol, path = entry.split(b"\t", 1)
+            paths.append(path)
             rel = path.decode("utf-8")
             index, worktree, attribute = eol.split(maxsplit=2)
             if b"eol=crlf" in attribute or (index == b"i/lf" and worktree in (b"w/crlf", b"w/mixed")):
                 raise InitError(f"{rel}: Git attributes or working bytes conflict with ledger LF storage")
+
+    attrs = git_bytes(root, "check-attr", "--stdin", "-z", "eol", "filter", "working-tree-encoding",
+                      "ident", timeout=gitops.GIT_LOCAL_TIMEOUT, data=b"\0".join(paths) + b"\0")
+    fields = iter(attrs.removesuffix(b"\0").split(b"\0"))
+    for path, key, value in zip(fields, fields, fields, strict=True):
+        if value not in (b"unspecified", b"unset") and (key != b"eol" or value != b"lf"):
+            raise InitError(f"{path.decode('utf-8')}: conflicting Git attribute "
+                            f"{key.decode()}={value.decode('utf-8', errors='replace')}")
 
 
 def init_home(path: Path | str) -> InitResult:

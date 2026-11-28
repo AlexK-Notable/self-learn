@@ -3,7 +3,7 @@
 from argparse import Namespace
 
 AVAILABLE = {
-    "ledger": False,  # general ledger administration beyond capture
+    "ledger": False,  # general ledger administration beyond basic capture
     "canon": False,
     "hooks": False,
     "sdk": False,
@@ -16,42 +16,53 @@ AVAILABLE = {
 REQUIRES = {
     **dict.fromkeys("init host teach show list".split(), frozenset()),
     **dict.fromkeys((
-        "batch bucket canary case config confirm-held confirm-recurrence defer "
-        "dismiss-suspect followup grant index link note notice premises proposal push "
+        "bucket canary case config confirm-held confirm-recurrence defer "
+        "dismiss-suspect followup grant index link note notice proposal push "
         "reclassify reconcile reconsider rehome reject reopen report rescope "
-        "revise select statement status supersede telemetry undefer user-model"
+        "revise select sentinel statement status supersede telemetry undefer user-model"
     ).split(), frozenset({"ledger"})),
-    **dict.fromkeys("import prune-memory recompile replace reroute retire route skill".split(),
+    **dict.fromkeys("batch import prune-memory recompile replace reroute retire route skill".split(),
                     frozenset({"ledger", "canon"})),
     "hook": frozenset({"canon", "hooks"}),
     "doctor": frozenset({"ledger", "hooks", "sdk", "supervisor"}),
     **dict.fromkeys("mine overseer steward worker".split(), frozenset({"ledger", "sdk", "background"})),
-    **dict.fromkeys("ask summarise".split(), frozenset({"sdk"})),
+    **dict.fromkeys("ask premises summarise".split(), frozenset({"sdk"})),
     "serve": frozenset({"background", "supervisor"}),
     "attention": frozenset({"desktop"}),
-    "sentinel": frozenset({"background"}),
     **dict.fromkeys(("host commit-drift", "host rebind", "host remove", "host set-mode"),
-                    frozenset({"ledger", "canon"})),
-    "teach route": frozenset({"canon", "sdk"}),
+                    frozenset({"ledger"})),
+    **dict.fromkeys(("teach --route", "teach --dest", "teach --note", "teach --allow-empty-glob",
+                     "teach --rules-path", "teach --allow-unpathed", "teach --follow-up",
+                     "teach --unblocks-on", "teach --follow-up-note"), frozenset({"canon"})),
+    "teach --hook-input": frozenset({"canon", "hooks"}),
     "--selftest": frozenset({"ledger", "hooks", "sdk", "supervisor"}),
 }
 
-ROUTE_FLAGS = ("route", "allow_empty_glob", "allow_unpathed")
-ROUTE_VALUES = ("dest", "note", "hook_input", "rules_paths", "follow_up", "unblocks_on", "follow_up_note")
+# argparse's destinations are authoritative, including abbreviated options
+# and explicitly empty string values. Boolean flags have False as their default.
+TEACH_OPTIONS = {
+    "route": "--route", "dest": "--dest", "note": "--note", "rules_paths": "--rules-path",
+    "allow_empty_glob": "--allow-empty-glob", "allow_unpathed": "--allow-unpathed",
+    "follow_up": "--follow-up", "unblocks_on": "--unblocks-on", "follow_up_note": "--follow-up-note",
+    "hook_input": "--hook-input",
+}
 
 
 def refused(args: Namespace) -> str | None:
-    if args.selftest:
-        form = verb = "--selftest"
-    else:
-        verb = form = args.command
-        if verb is None:
-            return None
-        if verb == "host" and args.host_command not in (None, "add", "list"):
-            form = f"host {args.host_command}"
-        if verb == "teach" and (any(getattr(args, flag) for flag in ROUTE_FLAGS)
-                                or any(getattr(args, opt) is not None for opt in ROUTE_VALUES)):
-            form = "teach route"
-    if form not in REQUIRES or any(not AVAILABLE[cap] for cap in REQUIRES[form]):
-        return verb
+    verb = "--selftest" if args.selftest else args.command
+    if verb is None:
+        return None
+    forms = [verb]
+    if verb == "host" and args.host_command not in (None, "add", "list"):
+        forms.append(f"host {args.host_command}")
+    if verb == "teach":
+        for dest, option in TEACH_OPTIONS.items():
+            value = getattr(args, dest)
+            if value is not None and value is not False:
+                forms.append("teach " + option)
+        if args.route and args.dest is None and not AVAILABLE["sdk"]:
+            return verb
+    for form in forms:
+        if form not in REQUIRES or any(not AVAILABLE[cap] for cap in REQUIRES[form]):
+            return verb
     return None

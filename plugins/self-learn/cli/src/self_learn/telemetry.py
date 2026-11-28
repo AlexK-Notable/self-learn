@@ -218,9 +218,18 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
         event[key] = value
     line = json.dumps(event, separators=(",", ":"), sort_keys=True)
 
-    path = names.component_path(spool_dir(), f"{_month(now)}.{actor()}.jsonl")
     if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        spool = spool_dir()
+        try:
+            path = names.component_path(spool, f"{_month(now)}.{actor()}.jsonl")
+        except ValueError as exc:
+            raise TelemetryError(str(exc)) from exc
+        checked_path(names.cache_root(), path.with_name(path.name + ".lck"))
         _cache_base()
+    else:
+        path = names.component_path(spool_dir(), f"{_month(now)}.{actor()}.jsonl")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         if os.name == "nt":
@@ -410,6 +419,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 from .primitives._capture_windows import checked_path
 
                 checked_path(names.cache_root(), spool_path)
+                checked_path(names.cache_root(), spool_path.with_name(spool_path.name + ".lck"))
             try:
                 fh = open(spool_path, "r+b")
             except (FileNotFoundError, OSError):

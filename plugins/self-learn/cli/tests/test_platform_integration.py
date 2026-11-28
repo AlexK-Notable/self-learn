@@ -176,7 +176,7 @@ def test_component_rejects_invalid_actor_without_creating_spool(home, monkeypatc
     assert json.loads(spool.read_bytes())["actor"] == "capture-test"
     before = {p: p.read_bytes() for p in spool.parent.rglob("*") if p.is_file()}
     monkeypatch.setenv("SELF_LEARN_ACTOR", "../nested/actor")
-    with pytest.raises(ValueError):
+    with pytest.raises(telemetry.TelemetryError):
         telemetry.spool_event("offer-made")
     assert {p: p.read_bytes() for p in spool.parent.rglob("*") if p.is_file()} == before
 
@@ -207,7 +207,7 @@ def test_git_tree_keys_and_literal_pathspec_with_unrelated_index_entry(home, tmp
     old, match = home / name, home / "café 1"
     old.write_bytes(b"\xff\0old")
     match.write_bytes(b"index control")
-    gitops.stage(home, [old, match])
+    gitops.stage(home, [old.name, match.name])
     gitops.commit(home, "both", paths=[old, match])
     git(home, "mv", "--", name, "renamed")
     match.write_bytes(b"pending")
@@ -244,6 +244,18 @@ def test_existing_buckets_roundtrip_without_rekey(home, tmp_path):
     assert set((home / "projects").iterdir()) == names_before
     assert all(p.read_bytes() == data for p, data in initial.items())
     assert len(hosts.load_hosts(home).projects) == 2
+    meta = record.parents[1] / "meta.yaml"
+    other = tmp_path / "other registered target"
+    other.mkdir()
+    meta.write_text(f"path: {other.as_posix()}\n", encoding="utf-8")
+    snapshot = git(home, "status", "--porcelain", "-zuall")
+    head = git(home, "rev-parse", "HEAD")
+    with pytest.raises(hosts.HostsError, match="verify"):
+        hosts.host_add(home, host, "project", mode="plain")
+    with pytest.raises(ValueError, match="verify"):
+        gitops.host_lock_path(host, "plain")
+    assert git(home, "status", "--porcelain", "-zuall") == snapshot
+    assert git(home, "rev-parse", "HEAD") == head
 
 
 @windows
@@ -267,3 +279,36 @@ def test_init_repairs_local_config_before_recovery(home, tmp_path):
     with pytest.raises(ledger.InitError, match="test.txt"):
         ledger.init_home(home)
     assert path.read_bytes() == b"ledger LF\r\n"
+    path.write_bytes(b"ledger LF\n")
+    (home / ".gitattributes").write_bytes(b"*.md text eol=crlf\n")
+    with pytest.raises(ledger.InitError, match="conflicting Git attribute"):
+        ledger.init_home(home)
+
+
+@windows
+def test_cross_drive_pointer_and_git_rejection(home, monkeypatch):
+    other_drive = "Z:" if home.drive.upper() != "Z:" else "Y:"
+    target = Path(other_drive + "/other/record.md")
+    assert names.pointer_token(home / "surface", target) == str(target)
+    local = home / "in-root"
+    local.touch()
+    assert gitops.stage(home, [local.name]) == [local]
+    calls = []
+    monkeypatch.setattr(gitops, "_git", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(ValueError):
+        gitops.stage(home, [target])
+    assert calls == []
+
+
+@windows
+def test_foreign_registry_is_readable_and_preserved(home, tmp_path):
+    from self_learn import cli
+    registry = home / "hosts.yaml"
+    registry.write_bytes(b"skills_root: null\nprojects:\n- path: /foreign/source\n  mode: plain\n")
+    before = registry.read_bytes()
+    assert cli.main(["list", "--json"]) == 0
+    assert hosts.load_hosts(home).projects == []
+    host = tmp_path / "local"
+    host.mkdir()
+    assert cli.main(["host", "add", str(host), "--mode", "plain"]) != 0
+    assert registry.read_bytes() == before and list(host.iterdir()) == []

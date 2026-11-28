@@ -14,11 +14,11 @@ windows = pytest.mark.skipif(os.name != "nt", reason="native Windows capture")
 linux = pytest.mark.skipif(os.name == "nt", reason="Linux capture contract")
 BASIC = {"init", "list", "show", "teach", "host"}
 LEDGER = set("""
-batch bucket canary case config confirm-held confirm-recurrence defer dismiss-suspect
-followup grant index link note notice premises proposal push reclassify reconcile reconsider rehome
-reject reopen report rescope revise select statement status supersede telemetry undefer user-model
+bucket canary case config confirm-held confirm-recurrence defer dismiss-suspect
+followup grant index link note notice proposal push reclassify reconcile reconsider rehome
+reject reopen report rescope revise select sentinel statement status supersede telemetry undefer user-model
 """.split())
-CANON = set("import prune-memory recompile replace reroute retire route skill".split())
+CANON = set("batch import prune-memory recompile replace reroute retire route skill".split())
 JOBS = {"mine", "overseer", "steward", "worker"}
 
 
@@ -36,8 +36,8 @@ def test_capability_table_matches_parser():
         "ledger": LEDGER | CANON | JOBS | {"doctor"},
         "canon": CANON | {"hook"},
         "hooks": {"doctor", "hook"},
-        "sdk": JOBS | {"doctor", "ask", "summarise"},
-        "background": JOBS | {"serve", "sentinel"},
+        "sdk": JOBS | {"doctor", "ask", "premises", "summarise"},
+        "background": JOBS | {"serve"},
         "supervisor": {"serve", "doctor"},
         "desktop": {"attention"},
     }
@@ -140,9 +140,20 @@ def test_linux_teach_never_imports_capabilities(tmp_path):
     code = """
 import sys
 from self_learn.cli import main
-assert main(['init']) == 0
+from self_learn import gitops, ledger
+from unittest.mock import patch
+with patch.object(gitops, '_git', wraps=gitops._git) as commands:
+    assert main(['init']) == 0
+    assert main(['init']) == 0
+    assert all('config' not in call.args[1:] for call in commands.call_args_list)
+assert ledger.resolve_home() == __import__('pathlib').Path(__import__('os').environ['SELF_LEARN_HOME'])
 assert main(['teach','--user','--no-push','--fact','synthetic capture']) == 0
 assert 'self_learn.primitives.capabilities' not in sys.modules
+assert 'self_learn.primitives._capture_windows' not in sys.modules
+from self_learn import cli
+with patch.object(cli.miner, 'maybe_kick', return_value='disabled') as watchdog:
+    assert main(['status', '--unexpected']) == cli.EXIT_USAGE
+    watchdog.assert_called_once_with(ledger.resolve_home(), no_push=False)
 """
     subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=env, check=True, timeout=60)
 

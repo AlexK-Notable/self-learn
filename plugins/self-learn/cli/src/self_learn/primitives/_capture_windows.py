@@ -7,21 +7,61 @@ from pathlib import Path
 
 from . import names, procs
 
+
+class CapturePathError(ValueError):
+    """Cannot establish a safe, unambiguous local capture path."""
+
 def checked_path(root: Path, candidate: Path) -> Path:
     """Validate every component starting at the caller's selected root, before I/O."""
-    relative = candidate.relative_to(root)
-    if not relative.parts:
-        raise ValueError(f"expected a child of {root}")
-    current = root
-    for component in relative.parts:
-        current = names.component_path(current, component)
+    try:
+        relative = candidate.relative_to(root)
+        if not relative.parts:
+            raise ValueError(f"expected a child of {root}")
+        current = root
+        for component in relative.parts:
+            current = names.component_path(current, component)
+    except ValueError as exc:
+        raise CapturePathError(str(exc)) from exc
     return current
 
 
-def git_bytes(repo: Path, *args: str, timeout: float) -> bytes:
+def verify_project(home: Path, project: Path) -> None:
+    """Before a write or plain-host lock, check any existing bucket's claim."""
+    from ..ledger_ops import bucket_project_path
+
+    bucket = home / "projects" / names.project_slug(project)
+    checked_path(home, bucket / "meta.yaml")
+    if bucket.exists():
+        recorded = bucket_project_path(bucket)
+        if recorded is None or not recorded.is_absolute() or names.registration_key(recorded) != names.registration_key(project):
+            raise CapturePathError(f"cannot verify the registered project in {bucket}")
+
+
+def local_registry(data: dict, *, for_write: bool) -> dict:
+    """A foreign absolute path must never become relative to the current drive."""
+    def foreign(entry):
+        value = entry.get("path") if isinstance(entry, dict) else entry
+        return isinstance(value, str) and value and not Path(value).is_absolute()
+
+    projects = data.get("projects")
+    foreign_projects = isinstance(projects, list) and any(foreign(entry) for entry in projects)
+    foreign_root = foreign(data.get("skills_root"))
+    if not (foreign_root or foreign_projects):
+        return data
+    if for_write:
+        raise CapturePathError("hosts.yaml contains paths without a local Windows drive or share")
+    local = dict(data)
+    if foreign_root:
+        local["skills_root"] = None
+    if foreign_projects:
+        local["projects"] = [entry for entry in projects if not foreign(entry)]
+    return local
+
+
+def git_bytes(repo: Path, *args: str, timeout: float, data: bytes | None = None) -> bytes:
     from ..gitops import GitOpsError
 
-    proc = procs.run_bounded(["git.exe", "-C", str(repo), *args], binary=True, timeout=timeout)
+    proc = procs.run_bounded(["git.exe", "-C", str(repo), *args], binary=True, timeout=timeout, input=data)
     if proc.returncode:
         raise GitOpsError(proc.stderr.decode("utf-8", errors="replace").strip())
     return proc.stdout

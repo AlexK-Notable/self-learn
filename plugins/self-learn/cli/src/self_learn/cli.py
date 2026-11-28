@@ -5209,6 +5209,14 @@ def main(argv: list[str] | None = None) -> int:
         for stream in (sys.stdout, sys.stderr):
             if isinstance(stream, io.TextIOWrapper) and not stream.isatty():
                 stream.reconfigure(encoding="utf-8")
+    if os.name == "nt":
+        from .primitives._capture_windows import CapturePathError
+
+        try:
+            return contextvars.copy_context().run(_attributed_main, argv)
+        except CapturePathError as exc:
+            print(f"self-learn: {exc}", file=sys.stderr)
+            return 1
     return contextvars.copy_context().run(_attributed_main, argv)
 
 

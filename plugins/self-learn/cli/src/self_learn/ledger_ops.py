@@ -657,6 +657,8 @@ def bucket_project_path(bucket_dir: Path) -> Path | None:
     except ProposalError:
         return None
     value = data.get("path")
+    if os.name == "nt" and isinstance(value, str) and not Path(value).is_absolute():
+        return None  # For example a Unix path in a historical checkout.
     return Path(value) if isinstance(value, str) and value else None
 
 
@@ -684,6 +686,10 @@ def create_record(
     ``meta.yaml`` written beside the bucket on first creation (doc 13 §3).
     Returns the created path."""
     require_writable_home(home)  # nothing is written into a broken home
+    if os.name == "nt" and record.scope == "project" and project_path is not None:
+        from .primitives._capture_windows import verify_project
+
+        verify_project(home, project_path)
     bucket_dir = bucket_dir_for_scope(home, record.scope, project_path=project_path)
     if os.name == "nt":
         from .primitives._capture_windows import checked_path

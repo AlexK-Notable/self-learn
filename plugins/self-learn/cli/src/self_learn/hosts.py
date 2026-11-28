@@ -279,7 +279,7 @@ def _parse_mode(path: Path, where: str, raw: object) -> str:
     return raw
 
 
-def load_hosts(home: Path | str) -> Hosts:
+def load_hosts(home: Path | str, *, for_write: bool = False) -> Hosts:
     """Parse ``<home>/hosts.yaml``. A missing file is an EMPTY registry
     (nothing registered — every compile gate refuses), never an error;
     a malformed file raises :class:`HostsError` with the exact complaint.
@@ -300,6 +300,10 @@ def load_hosts(home: Path | str) -> Hosts:
     if not isinstance(data, dict):
         raise HostsError(f"{path} must be a YAML mapping, got {type(data).__name__}")
 
+    if os.name == "nt":
+        from .primitives._capture_windows import local_registry
+
+        data = local_registry(data, for_write=for_write)
     raw_root = data.get("skills_root")
     skills_root: Path | None = None
     skills_root_mode = "git"
@@ -806,10 +810,13 @@ def _host_add(
     if not home.is_dir():
         raise HostsError(f"ledger home {home} does not exist")
     if os.name == "nt":
-        from .primitives._capture_windows import checked_path
+        from .primitives._capture_windows import checked_path, verify_project
 
         try:
             checked_path(home, hosts_path(home))
+            load_hosts(home, for_write=True)
+            if kind == "project":
+                verify_project(home, Path(path).expanduser())
             if mode == "plain":
                 host = Path(path).expanduser()
                 checked_path(host, host / MARKER_FILENAME)
@@ -2174,6 +2181,16 @@ def capture_host_path(home: Path | str, path: Path | str) -> Path:
             return original  # a main working tree, not a linked worktree
         if is_project_host(hosts, Path(lines[2])):
             return original  # the worktree itself is a registered host
+        if os.name == "nt":
+            from .primitives._capture_windows import git_bytes
+
+            listing_bytes = git_bytes(target, "worktree", "list", "--porcelain", "-z", timeout=gitops.GIT_LOCAL_TIMEOUT)
+            first = listing_bytes.split(b"\0", 1)[0].decode("utf-8")
+            if first.startswith("worktree "):
+                main = Path(first.removeprefix("worktree "))
+                if is_project_host(hosts, main):
+                    return main.resolve()
+            return original
         listing = _git_stdout(target, "worktree", "list", "--porcelain")
         if listing is None:
             return original

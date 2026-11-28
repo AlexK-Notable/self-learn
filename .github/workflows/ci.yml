@@ -65,6 +65,8 @@ jobs:
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
           $skipped = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
           $expected = @(
+            'test_cross_drive_pointer_and_git_rejection'
+            'test_foreign_registry_is_readable_and_preserved'
             'test_capability_table_matches_parser'
             'test_refusal_profile_precedes_dispatch'
             'test_background_kicks_refuse_before_settings'

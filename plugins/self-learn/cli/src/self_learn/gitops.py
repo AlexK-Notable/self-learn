@@ -310,6 +310,8 @@ def stage(repo: Path, paths: Iterable[Path | str]) -> list[Path]:
     """``git add -- <existing touched paths>`` — targeted staging, never
     ``-A``. Vanished paths (deletions pre-staged by git mv/rm, or
     untracked-and-gone) are skipped. Returns what was actually staged."""
+    if os.name == "nt":
+        paths = [repo / names.git_arg(repo, path) for path in paths]
     existing = [Path(p) for p in paths if Path(p).exists()]
     if existing:
         _git_ok(repo, "add", "--", *[names.git_arg(repo, p) for p in existing])
@@ -428,6 +430,11 @@ def commit_lock_path(repo: Path) -> Path:
     # absolute spelling, a symlinked worktree) used to key differently,
     # so an inner acquire could read as outermost. Resolving once here
     # keeps every caller's key identical for the same real file.
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        lock = checked_path(gitdir, gitdir / "self-learn.commit.lock")
+        checked_path(gitdir, lock.with_name(lock.name + ".lck"))
     return (gitdir / "self-learn.commit.lock").resolve()
 
 
@@ -508,6 +515,10 @@ def host_lock_path(path: Path, mode: str) -> Path:
     (and into its one shared ``info/exclude``) shared none. The mode is
     not read from here: this only chooses where the lock FILE lives. A
     path with no ``.git`` above it never runs git at all (PLAIN4)."""
+    if os.name == "nt" and mode == "plain":
+        from .primitives._capture_windows import verify_project
+
+        verify_project(names.ledger_home(), path)
     if mode == "git":
         return commit_lock_path(Path(path))
     if mode == "plain":
@@ -564,6 +575,8 @@ def known_paths(repo: Path, paths: Iterable[Path | str]) -> list[str]:
     across two commits. Conversely a pathspec naming a never-tracked absent
     path makes git fail the whole commit ("did not match any file(s) known
     to git"), so unknown paths are dropped rather than passed through."""
+    if os.name == "nt":
+        paths = [repo / names.git_arg(repo, path) for path in paths]
     out: list[str] = []
     for raw in paths:
         p = Path(raw)

@@ -149,7 +149,9 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
             if Path(rel).as_posix() in {"primitives/_procs_windows.py", "primitives/_procs_posix.py"}:
                 continue
             # serve._reexec replaces the service itself at this one os.execve site.
-            if (rel, node.lineno, ast.unparse(node.func)) == ("serve.py", 2372, "os.execve"):
+            if (rel, node.lineno, ast.unparse(node)) == (
+                "serve.py", 2371, "os.execve(sys.executable, argv, env)"
+            ):
                 continue
             hits.append(Violation(rel, node.lineno, "native-launch-outside-backend"))
         elif name == "communicate":
