@@ -281,8 +281,7 @@ def route_everywhere(c: Canon) -> dict:
         "shelf": c.teach(proj, "project", "Shelf fact"),
         "notes": c.teach(proj, "project", "Notes fact"),
     }
-    out = c.route(ids["user"], "claude-md")
-    assert "~/.claude/CLAUDE.md is " in out  # the budget note names it with slashes
+    c.route(ids["user"], "claude-md")
     c.route(ids["project"], "claude-md")
     c.route(ids["local"], "claude-md:local")
     c.route(ids["rules"], "claude-md:rules:windows")
@@ -497,3 +496,7 @@ def test_windows_display_labels_use_slashes(canon):
     canon.teach(canon.root, "user", "Label fact")
     user = [b for b in discover_buckets(canon.ledger) if b.scope == "user"]
     assert places.bucket_places(user)[("user", user[0].name)]["path"] == "~/.claude"
+    # The route's budget note names the user's file with slashes.
+    (canon.profile / ".claude" / "CLAUDE.md").write_bytes(USER_SEED)
+    record_id = canon.teach(canon.root, "user", "Budget fact")
+    assert "~/.claude/CLAUDE.md is " in canon.route(record_id, "claude-md")
