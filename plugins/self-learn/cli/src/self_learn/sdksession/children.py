@@ -74,8 +74,21 @@ def write_sidecar(
     """`K-4` -- written as soon as the child pid is known. Carries more
     than a bare pid: a bare pid is a pid-reuse foot-gun -- a sweep that
     trusts one can SIGKILL an unrelated process that inherited the
-    number."""
+    number.
+
+    S-NEXT-w6-sdk, Windows only: also records the child's identity, its
+    owner's (this process's) identity and how its program was chosen
+    (`_containment_windows.record`); a failed write is reported and loses
+    only the sidecar, never the model call."""
     path = sidecar_path(cache_dir, surface, session_key)
+    if os.name == "nt":
+        from . import _containment_windows
+
+        try:
+            path.write_text(json.dumps(_containment_windows.record(pid, cli)), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - the session goes on without a sidecar
+            _containment_windows.sidecar_failed(pid, exc)
+        return
     path.write_text(
         json.dumps({"pid": pid, "started_at": time.time(), "cli": cli}),
         encoding="utf-8",
@@ -94,7 +107,21 @@ def read_sidecar(cache_dir: Path, surface: str, session_key: str | None = None) 
 def clear_sidecar(cache_dir: Path, surface: str, session_key: str | None = None) -> None:
     """`K-4`/`K-5` -- unlinked whether the session succeeded, failed, or
     timed out; also the ONE call site the orphan sweep uses once it is
-    done with a sidecar it read."""
+    done with a sidecar it read.
+
+    S-NEXT-w6-sdk, Windows only: never removes a record a live process other
+    than this one owns, and a failure to remove leaves the file for a later
+    sweep without failing the caller (`_containment_windows.may_clear`)."""
+    if os.name == "nt":
+        from . import _containment_windows
+
+        path = sidecar_path(cache_dir, surface, session_key)
+        if _containment_windows.may_clear(path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return
     sidecar_path(cache_dir, surface, session_key).unlink(missing_ok=True)
 
 
@@ -133,6 +160,15 @@ def _sweep_one(
         clear_sidecar(cache_dir, surface, session_key)
         if messages.orphan_no_live_process is not None:
             log(messages.orphan_no_live_process(surface, pid))
+        return
+    if os.name == "nt":
+        from . import _containment_windows
+
+        _containment_windows.sweep_one(
+            cache_dir, surface, session_key, record, pid, started_at,
+            log=log, pid_alive=pid_alive, process_start=process_start, messages=messages,
+            clear=lambda: clear_sidecar(cache_dir, surface, session_key),
+        )
         return
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
@@ -189,7 +225,21 @@ def sweep_orphans(
     is nothing to sweep (`O-quiet`).
 
     `process_start` defaults to :func:`default_process_start` (`F-4`);
-    a caller may pass an explicit anchor (`MS5`)."""
+    a caller may pass an explicit anchor (`MS5`).
+
+    S-NEXT-w6-sdk, Windows only: the same sweep, best effort (a failure is
+    reported and never stops the session from starting)."""
+    if os.name == "nt":
+        from . import _containment_windows
+
+        safe = _containment_windows.safe_log(log)
+        _containment_windows.best_effort_sweep(
+            lambda: _sweep_surface_windows(
+                cache_dir, surface, safe, pid_alive=pid_alive, messages=messages, process_start=process_start,
+            ),
+            surface, safe,
+        )
+        return
     anchor = default_process_start() if process_start is None else process_start
     unkeyed = sidecar_path(cache_dir, surface, None)
     if unkeyed.is_file():
@@ -231,7 +281,21 @@ def sweep_orphan(
     corroborating checks as :func:`sweep_orphans`, and leave every other
     sidecar of the surface alone -- a sibling session's that is running,
     or a host job's. Silent when that sidecar does not exist; a sidecar
-    that cannot be parsed is unlinked."""
+    that cannot be parsed is unlinked.
+
+    S-NEXT-w6-sdk, Windows only: best effort, as :func:`sweep_orphans`."""
+    if os.name == "nt":
+        from . import _containment_windows
+
+        safe = _containment_windows.safe_log(log)
+        _containment_windows.best_effort_sweep(
+            lambda: _sweep_keyed_windows(
+                cache_dir, surface, session_key, safe, pid_alive=pid_alive, messages=messages,
+                process_start=process_start,
+            ),
+            surface, safe,
+        )
+        return
     anchor = default_process_start() if process_start is None else process_start
     path = sidecar_path(cache_dir, surface, session_key)
     if not path.is_file():
@@ -243,6 +307,67 @@ def sweep_orphan(
         return
     if not isinstance(record, dict):
         path.unlink(missing_ok=True)
+        return
+    _sweep_one(
+        cache_dir, surface, session_key, record,
+        log=log, pid_alive=pid_alive, process_start=anchor, messages=messages,
+    )
+
+
+# S-NEXT-w6-sdk: the Windows bodies of `sweep_orphans` and `sweep_orphan`,
+# copies of the Linux bodies above (which stay byte-for-byte), run inside
+# `_containment_windows.best_effort_sweep`. The record removals on these
+# paths go through `clear_sidecar`, which on Windows never removes a live
+# owner's record.
+
+
+def _sweep_surface_windows(
+    cache_dir: Path,
+    surface: str,
+    log: Callable[[str], None],
+    *,
+    pid_alive: Callable[[int], bool],
+    messages: ShutdownMessages,
+    process_start: float | None,
+) -> None:
+    anchor = default_process_start() if process_start is None else process_start
+    unkeyed = sidecar_path(cache_dir, surface, None)
+    if unkeyed.is_file():
+        record = read_sidecar(cache_dir, surface, None)
+        if record is not None:
+            _sweep_one(
+                cache_dir, surface, None, record,
+                log=log, pid_alive=pid_alive, process_start=anchor, messages=messages,
+            )
+    prefix = f"{surface}.sdk-child."
+    for path in sorted(cache_dir.glob(f"{surface}.sdk-child.*.pid")):
+        session_key = path.name[len(prefix) : -len(".pid")]
+        _sweep_keyed_windows(
+            cache_dir, surface, session_key, log, pid_alive=pid_alive, messages=messages, process_start=anchor,
+        )
+
+
+def _sweep_keyed_windows(
+    cache_dir: Path,
+    surface: str,
+    session_key: str,
+    log: Callable[[str], None],
+    *,
+    pid_alive: Callable[[int], bool],
+    messages: ShutdownMessages,
+    process_start: float | None,
+) -> None:
+    anchor = default_process_start() if process_start is None else process_start
+    path = sidecar_path(cache_dir, surface, session_key)
+    if not path.is_file():
+        return
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        clear_sidecar(cache_dir, surface, session_key)
+        return
+    if not isinstance(record, dict):
+        clear_sidecar(cache_dir, surface, session_key)
         return
     _sweep_one(
         cache_dir, surface, session_key, record,
