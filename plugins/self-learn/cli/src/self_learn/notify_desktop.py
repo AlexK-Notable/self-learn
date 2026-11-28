@@ -95,8 +95,6 @@ def parse_args(argv: Sequence[str]) -> dict[str, str]:
             raise Refused(f"{flag} given twice")
         if index + 1 >= len(argv):
             raise Refused(f"{flag} needs a value")
-        if argv[index + 1].startswith("--"):
-            raise Refused("dash value")  # BREAK B3
         found[name] = argv[index + 1]
         index += 2
     for required in ("title", "body"):
@@ -170,7 +168,7 @@ def toast_xml(title: str, body: str, url: str | None) -> str:
     running. ``duration="long"`` keeps the popup about 25 seconds."""
     attributes = {"duration": "long"}
     if url is not None:
-        attributes.update({"launch": url})  # BREAK B12
+        attributes.update({"activationType": "protocol", "launch": url})
     toast = Element("toast", attributes)
     visual = SubElement(toast, "visual")
     binding = SubElement(visual, "binding", {"template": "ToastGeneric"})
@@ -180,7 +178,7 @@ def toast_xml(title: str, body: str, url: str | None) -> str:
         actions = SubElement(toast, "actions")
         SubElement(actions, "action", {"content": "Open", "activationType": "protocol",
                                        "arguments": url})
-    return tostring(toast, encoding="unicode").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")  # BREAK B8
+    return tostring(toast, encoding="unicode")
 
 
 def pythonw_beside(executable: str | None = None) -> Path | None:
@@ -197,8 +195,8 @@ def helper_argv(launcher: Path | str, *, title: str, body: str, url: str | None)
     never through a shell. ``-I`` keeps the current folder and ``PYTHON*``
     variables out of the helper's imports."""
     argv = [str(launcher), "-I", "-m", MODULE,
-            "--title", title,
-            "--body", body]  # BREAK B9
+            "--title", clean_text(title, TITLE_LIMIT),
+            "--body", clean_text(body, BODY_LIMIT)]
     if url is not None:
         argv += ["--open", url]
     return argv
@@ -244,7 +242,7 @@ def _show(document: str) -> str:
             ToastNotificationManager,
         )
     except ImportError:
-        os._exit(0)  # BREAK B6
+        return "skipped: the desktop extra is not installed"
     try:
         _register_identity()
         notifier = ToastNotificationManager.create_toast_notifier(AUMID)
@@ -254,7 +252,7 @@ def _show(document: str) -> str:
             # desktop-notifier issue #95: some sessions cannot read the
             # setting yet show toasts; it treats this as allowed, so do we.
             setting = NotificationSetting.ENABLED
-        if False:  # BREAK B13
+        if setting != NotificationSetting.ENABLED:
             return f"skipped: notifications are off for this session ({setting.name})"
         xml = XmlDocument()
         xml.load_xml(document)
