@@ -518,6 +518,7 @@ def test_git_text_and_byte_exact_output(tmp_path):
 
 @windows
 def test_closed_pipes_live_leader(tmp_path, monkeypatch):
+    import win32event
     import win32job
     # Observe the EOFs at the deadline, before termination can close a pipe.
     terminate = win32job.TerminateJobObject
@@ -527,12 +528,20 @@ def test_closed_pipes_live_leader(tmp_path, monkeypatch):
         return terminate(*args)
     monkeypatch.setattr(win32job, "TerminateJobObject", observe)
     ready = tmp_path / "ready"
+    wait = win32event.WaitForSingleObject
+    waits = []
+    def observe_wait(handle, millis):
+        if ready.exists() and not at_deadline:
+            waits.append(millis)
+        return wait(handle, millis)
+    monkeypatch.setattr(win32event, "WaitForSingleObject", observe_wait)
     argv = _python("""
         import os, sys, time
         from pathlib import Path
+        time.sleep(.7)
+        Path(sys.argv[1]).write_text(str(os.getpid()))
         os.close(1)
         os.close(2)
-        Path(sys.argv[1]).write_text(str(os.getpid()))
         time.sleep(15)
     """, ready)
     # A Windows venv's python.exe is a redirector that waits with its own
@@ -543,6 +552,7 @@ def test_closed_pipes_live_leader(tmp_path, monkeypatch):
     exc = caught.value
     assert (exc.cmd, exc.timeout, exc.output, exc.stderr) == (argv, 2, None, None)
     assert at_deadline == [[]]
+    assert len(waits) == 1 and 0 < waits[0] < 1500
     pid = int(ready.read_text())
     _wait_for(lambda: not procs.pid_alive(pid))
     _assert_no_pipe_threads()
@@ -572,7 +582,18 @@ _BEATS = """
 
 @windows
 @pytest.mark.parametrize("mode", ["timeout", "overflow", "success"])
-def test_job_owns_grandchild_only(tmp_path, mode):
+def test_job_owns_grandchild_only(tmp_path, monkeypatch, mode):
+    import win32process
+
+    # The Windows venv redirector and the Python payload have different PIDs.
+    # Give the heartbeat process the kernel PID returned for the job leader.
+    leader_pid = tmp_path / "leader-pid"
+    create_process = win32process.CreateProcess
+    def record_leader(*args):
+        result = create_process(*args)
+        leader_pid.write_text(str(result[2]))
+        return result
+    monkeypatch.setattr(win32process, "CreateProcess", record_leader)
     peer_file, owned_file = tmp_path / "peer", tmp_path / "owned"
     peer_token, owned_token = uuid4().hex, uuid4().hex
     peer = subprocess.Popen(_python(_BEATS, peer_file, peer_token, 0, "peer"))
@@ -582,14 +603,14 @@ def test_job_owns_grandchild_only(tmp_path, mode):
         leader = _python("""
             import os, subprocess, sys, time
             from pathlib import Path
-            mode, ready, *cmd = sys.argv[1:]
+            mode, ready, leader_pid, *cmd = sys.argv[1:]
             streams = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL) if mode == "success" else dict(close_fds=False)
-            subprocess.Popen([*cmd, str(os.getpid()), mode], **streams)
+            subprocess.Popen([*cmd, Path(leader_pid).read_text(), mode], **streams)
             while not Path(ready).exists():
                 time.sleep(.025)
             sys.exit(7)
-        """, mode, tmp_path / "owned.ready", *_python(_BEATS, owned_file, owned_token))
+        """, mode, tmp_path / "owned.ready", leader_pid, *_python(_BEATS, owned_file, owned_token))
         opts = dict(binary=True, max_output_bytes=1, timeout=3)
         if mode == "success":
             done = procs.run_bounded(leader, **opts)

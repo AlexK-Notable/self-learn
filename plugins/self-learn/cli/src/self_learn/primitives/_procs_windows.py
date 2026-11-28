@@ -134,10 +134,9 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             with changed:
                 if failures:
                     return
-                # The other reader can hold one older request. Leave one byte
-                # for this reader's N+1 probe: at most limit + _CHUNK in flight
-                # and retained together, even when both pipes complete at once.
-                size = _CHUNK if limit is None else min(_CHUNK - 1, limit - total + 1)
+                # Both in-flight reads together fit in one 64 KiB chunk,
+                # including while their bytes are copied to the capture buffers.
+                size = _CHUNK if limit is None else min(_CHUNK // 2, limit - total + 1)
             # A synchronous anonymous-pipe read returns available bytes immediately.
             _, chunk = win32file.ReadFile(handle, size)
             if not chunk:
