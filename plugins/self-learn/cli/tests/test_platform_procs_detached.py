@@ -1038,12 +1038,16 @@ def test_windows_grandchild_holding_stderr_does_not_hang_the_reader(tmp_path):
             _wait_for(lambda: watch.alive()[0] is False)
             await asyncio.sleep(0.2)
             assert proc.returncode == 0  # asyncio has seen the exit
-            # The control (measured on Python 3.12): while a grandchild holds a
-            # pipe, both the read and asyncio's own wait() hang.
+            # The control: while the grandchild holds the pipe, the read hangs.
+            # (asyncio's own wait() hung in one runner run and returned in the
+            # next, so it is recorded, not asserted.)
             with pytest.raises(TimeoutError):
                 await asyncio.wait_for(proc.stderr.read(), 1.0)
-            with pytest.raises(TimeoutError):
-                await asyncio.wait_for(proc.wait(), 1.0)
+            try:
+                waited = await asyncio.wait_for(proc.wait(), 1.0)
+            except TimeoutError:
+                waited = "hung"
+            print(f"asyncio wait() while the grandchild held stderr: {waited}")
             assert watch.alive() == [False, True]
             await procs.terminate_owned(proc, kill_grace=2.0)
             assert await asyncio.wait_for(proc.stderr.read(), 5) == b""
@@ -1064,7 +1068,8 @@ def test_windows_dropping_the_process_object_kills_the_tree(tmp_path):
         gc.collect()
         try:
             watch.wait_dead()
-            await asyncio.sleep(0.5)  # let asyncio see the exit before the loop closes
+            await asyncio.sleep(0.5)  # let asyncio see the exit, then free its
+            gc.collect()  # transport while the loop is still open
         finally:
             watch.kill()
 
