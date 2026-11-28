@@ -66,6 +66,7 @@ jobs:
             'test_selected_paths'
             'test_review_commit_bytes'
             'test_windows_literal_status_and_diff'
+            'test_allow_empty_leaves_no_matching_sibling_staged'
             'test_fts5_round_trip'
             'test_push_local_bare'
             'test_windows_unreachable_push_env'

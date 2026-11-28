@@ -144,11 +144,25 @@ def test_windows_literal_status_and_diff(repo):
     diff = gitops.staged_diff(repo, [repo / folder])
     assert "rename from " in diff and "decoy edit" not in diff
     assert "decoy edit" in gitops.staged_diff(repo, [sibling])
-    # Until the writer becomes literal, its allow_empty gate must see the same stage.
-    assert "decoy edit" in gitops.staged_diff(repo, [f"{folder}/unrelated"])
     assert git(repo, "show", ":" + sibling) == b"decoy edit"
     put(repo, f"{folder}/untracked dir/file", b"new")
     assert set(gitops.dirty_paths(repo, folder)) == {new, f"{folder}/untracked dir/"}
+
+
+def test_allow_empty_leaves_no_matching_sibling_staged(repo):
+    key = "skills/x [1]/pending/lrn-00000001.md"
+    target = put(repo, key, b"unchanged")
+    sibling = put(repo, key.replace("[1]", "1"), b"old")
+    git(repo, "add", "--", "skills")
+    git(repo, "commit", "-qm", "before")
+    sibling.write_bytes(b"modified sibling")
+    put(repo, "independent", b"already staged")
+    git(repo, "add", "--", "independent")
+    gitops.stage_and_commit(repo, [target], "scoped commit", allow_empty=True)
+    # Guard the mixed-mode early return, regardless of whether future writers
+    # ignore the sibling or legacy writers include it in the scoped commit.
+    assert git(repo, "diff", "--cached", "--name-only", "-z") == b"independent\0"
+    assert git(repo, "show", ":independent") == b"already staged"
 
 
 def test_fts5_round_trip(repo, tmp_path):
@@ -284,7 +298,7 @@ def test_undecodable_git_names(repo):
     git(repo, "commit", "-qm", "imported tree")
     result = series.day_series(repo, today=date(2025, 3, 2), tz=timezone.utc, days=1, events=[])
     assert result["error"] is None and result["rows"][0]["pending"] == 1
-    assert gitops._dirty_path_names(b"R  " + key + b"\0old\xfe\0") == [
+    assert gitops._dirty_path_names(b"?\0R  " + key + b"\0old\xfe\0R  incomplete\0truncated") == [
         "projects/raw\udcff/pending/lrn-00000007.md"]
 
 

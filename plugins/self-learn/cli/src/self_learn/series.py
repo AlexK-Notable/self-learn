@@ -20,7 +20,6 @@ on the ledger and reads case files; it writes nothing.
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from collections import Counter
@@ -162,8 +161,6 @@ def _batch_statuses(data: bytes, wanted: list[str]) -> dict[str, str] | None:
         if end < 0:
             return None
         header = data[offset:end].split()
-        if os.name == "nt" and len(header) == 2:
-            return {}
         if len(header) != 3 or header[:2] != [oid.encode("ascii"), b"blob"] or not header[2].isdigit():
             return None
         # A size larger than the entire response cannot describe a complete blob.
@@ -174,8 +171,6 @@ def _batch_statuses(data: bytes, wanted: list[str]) -> dict[str, str] | None:
             return None
         body = data[end + 1:offset].decode("utf-8", "replace")
         result[oid] = _frontmatter_status(body.replace("\r\n", "\n").replace("\r", "\n"))
-        if os.name == "nt" and result[oid] == "pending":
-            result[oid] = "deferred"
         offset += 1
     return result if offset == len(data) else None
 
