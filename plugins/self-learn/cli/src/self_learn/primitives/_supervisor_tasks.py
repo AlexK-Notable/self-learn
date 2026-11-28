@@ -160,7 +160,7 @@ def classify(task_state: int, result: int) -> State:
     overwrites its last result (spike section 5)."""
     if task_state in RUNNING_STATES:
         return "running"
-    return "stopped"
+    return "stopped" if result in CLEAN_RESULTS else "failed"
 
 
 def status(name: str, *, timeout: float) -> ServiceStatus:
@@ -195,7 +195,7 @@ def start(name: str, *, timeout: float) -> None:
     found = query(name)
     if found is None:
         raise _missing("/Run", name)
-    if False:
+    if found[0] in RUNNING_STATES:
         return  # A second /Run would only overwrite the last result.
     _schtasks("/Run", name, ["/TN", name], timeout)
 
