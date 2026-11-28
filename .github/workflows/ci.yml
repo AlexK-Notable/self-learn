@@ -58,7 +58,16 @@ jobs:
 
       - name: Windows process contracts
         working-directory: plugins/self-learn/cli
-        run: uv run --no-sync python -m pytest tests/test_platform_procs.py -p no:cacheprovider -q -rA
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "process-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_platform_procs.py -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $unexpected = @($cases | Where-Object {
+            $_.SelectSingleNode("skipped") -and $_.skipped.message -ne "Linux process contract"
+          })
+          if (!$ran.Count -or $unexpected.Count) { throw "Missing or unexpectedly skipped Windows process tests" }
 
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
