@@ -963,27 +963,40 @@ def test_pipe_api_error_reaches_caller(monkeypatch, operation):
 
 @windows
 @pytest.mark.parametrize("mode", ["reader", "writer", "uncancellable"])
-def test_stuck_pipe_has_bounded_cleanup(monkeypatch, mode):
+def test_stuck_pipe_has_bounded_cleanup(monkeypatch, tmp_path, mode):
     import win32api
     import win32con
     import win32process
     from self_learn.primitives import _procs_windows as backend
 
     real_create = win32process.CreateProcess
-    release = threading.Event()
+    ready = tmp_path / "holding"
     retained = []
     def create(*args):
         current = win32api.GetCurrentProcess()
         child_end = args[-1].hStdInput if mode == "writer" else args[-1].hStdOutput
-        spare = win32api.DuplicateHandle(current, child_end, current, 0, False,
-                                          win32con.DUPLICATE_SAME_ACCESS)
-        # The finite watchdog also frees a broken implementation from CloseHandle.
-        def hold():
-            release.wait(7)
+        spare = win32api.DuplicateHandle(current, child_end, current, 0, True,
+                                         win32con.DUPLICATE_SAME_ACCESS)
+        try:
+            # Only the duplicate crosses into this unrelated process. It exits
+            # by itself even if a broken supervisor hangs while holding the GIL.
+            argv = _python("""
+                import os, sys, time
+                from pathlib import Path
+                assert os.get_handle_inheritable(int(sys.argv[1]))
+                Path(sys.argv[2]).touch()
+                time.sleep(7)
+            """, int(spare), ready)
+            argv[0] = sys._base_executable
+            startup = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [int(spare)]})
+            holder = subprocess.Popen(argv, startupinfo=startup, close_fds=True,
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)
+            retained.append(holder)
+            _wait_for(lambda: ready.exists() or holder.poll() is not None)
+            assert ready.is_file()
+        finally:
             win32api.CloseHandle(spare)
-        keeper = threading.Thread(target=hold)
-        keeper.start()
-        retained.append(keeper)
         return real_create(*args)
     monkeypatch.setattr(win32process, "CreateProcess", create)
     monkeypatch.setattr(backend, "_CLEANUP_SECONDS", 1)
@@ -996,16 +1009,16 @@ def test_stuck_pipe_has_bounded_cleanup(monkeypatch, mode):
         with pytest.raises(RuntimeError, match="pipe"):
             procs.run_bounded(_python("print('ready')"), input=data, timeout=1)
         assert time.monotonic() - start < 3
-        assert len(retained) == 1 and retained[0].is_alive()
+        assert len(retained) == 1 and retained[0].poll() is None
         if mode == "uncancellable":
             pending = [t for t in threading.enumerate() if t.name.startswith("bounded-")]
             assert len(pending) == 1 and pending[0].daemon
         else:
             _assert_no_pipe_threads()
     finally:
-        release.set()
         for holder in retained:
-            holder.join(8)
+            holder.kill()
+            holder.wait(timeout=5)
     _wait_for(lambda: not any(t.name.startswith("bounded-") for t in threading.enumerate()))
 
 
