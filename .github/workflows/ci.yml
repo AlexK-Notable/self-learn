@@ -88,6 +88,7 @@ jobs:
             'test_platform_procs::test_job_owns_grandchild_only[success]'
             'test_platform_procs::test_job_owns_grandchild_only[timeout]'
             'test_platform_procs::test_launcher_death_closes_job'
+            'test_platform_procs::test_native_errors_include_cause_during_setup_and_cleanup[terminate]'
             'test_platform_procs::test_native_errors_include_cause_during_setup_and_cleanup[setup]'
             'test_platform_procs::test_native_errors_include_cause_during_setup_and_cleanup[close]'
             'test_platform_procs::test_native_errors_include_cause_during_setup_and_cleanup[inherited-handle]'

@@ -156,14 +156,14 @@ _cancel_io.argtypes = [wintypes.HANDLE]
 _cancel_io.restype = wintypes.BOOL
 
 
-def _join_pipes(threads, active, changed, stopping, deadline):
+def _join_pipes(threads, active, changed, stopping, deadline) -> bool:
     # Reserve time for cancellation of a read/write held open outside the job.
     grace = (time.monotonic() + deadline) / 2
     for thread in threads:
         if thread.ident is not None:
             thread.join(max(0, grace - time.monotonic()))
     if not any(thread.is_alive() for thread in threads):
-        return
+        return True
     stopping.set()
     # A worker removes its ID under this lock before exiting, preventing reuse.
     # ERROR_NOT_FOUND can also mean we raced between its stop check and ReadFile.
@@ -187,8 +187,7 @@ def _join_pipes(threads, active, changed, stopping, deadline):
     for thread in threads:
         if thread.ident is not None:
             thread.join(max(0, deadline - time.monotonic()))
-    if interrupted or any(thread.is_alive() for thread in threads):
-        raise RuntimeError("Windows pipe worker exceeded its cleanup deadline")
+    return not interrupted and not any(thread.is_alive() for thread in threads)
 
 
 def _capture(argv, timeout, cwd, env, data, inherit, limit):
@@ -275,21 +274,25 @@ def _capture(argv, timeout, cwd, env, data, inherit, limit):
             with changed:
                 completed = changed.wait_for(lambda: bool(failures) or finished == len(tasks),
                                              max(0, deadline - time.monotonic()))
-                if failures:
-                    raise failures[0]
-            exited = completed and _wait_until(process, deadline)
+                io_ok = completed and not failures
+            exited = io_ok and _wait_until(process, deadline)
         finally:
             cleanup = time.monotonic() + _CLEANUP_SECONDS
             try:
                 if not exited:
                     win32job.TerminateJobObject(job, 1)
-                    if not _wait_until(process, cleanup):
-                        raise RuntimeError("terminated Windows child did not exit")
+                reaped = exited or _wait_until(process, cleanup)
             finally:
-                _join_pipes(threads, active, changed, stopping, cleanup)
+                # Keep a native terminate/wait error if cancellation was also
+                # necessary. The caller needs its Win32 code to choose a fallback.
+                joined = _join_pipes(threads, active, changed, stopping, cleanup)
 
         if failures:
             raise failures[0]
+        if not reaped:
+            raise RuntimeError("terminated Windows child did not exit")
+        if not joined:
+            raise RuntimeError("Windows pipe worker exceeded its cleanup deadline")
         if not exited:
             if inherit:
                 raise subprocess.TimeoutExpired(argv, timeout, buffers[0].getvalue() or None,

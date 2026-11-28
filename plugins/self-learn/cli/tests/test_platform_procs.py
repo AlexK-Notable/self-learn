@@ -1087,7 +1087,7 @@ def test_interrupt_after_thread_start_joins_worker(monkeypatch):
 
 
 @windows
-@pytest.mark.parametrize("site", ["setup", "close", "inherited-handle"])
+@pytest.mark.parametrize("site", ["setup", "close", "inherited-handle", "terminate"])
 def test_native_errors_include_cause_during_setup_and_cleanup(monkeypatch, site):
     import _winapi
     import pywintypes
@@ -1096,8 +1096,17 @@ def test_native_errors_include_cause_during_setup_and_cleanup(monkeypatch, site)
     import win32pipe
     import winerror
 
+    from self_learn.primitives import _procs_windows as backend
+
     failure = pywintypes.error(winerror.ERROR_ACCESS_DENIED, site, "injected")
-    if site == "setup":
+    argv = _python("pass")
+    timeout = 5
+    if site == "terminate":
+        argv = _python("import time; time.sleep(8)")
+        timeout = .3
+        monkeypatch.setattr(backend, "_CLEANUP_SECONDS", 1)
+        monkeypatch.setattr(win32job, "TerminateJobObject", Mock(side_effect=failure))
+    elif site == "setup":
         monkeypatch.setattr(win32pipe, "CreatePipe", Mock(side_effect=failure))
     elif site == "inherited-handle":
         failure = OSError(0, "injected", None, winerror.ERROR_INVALID_HANDLE)
@@ -1116,9 +1125,8 @@ def test_native_errors_include_cause_during_setup_and_cleanup(monkeypatch, site)
                 raise failure
         monkeypatch.setattr(win32job, "CreateJobObject", track)
         monkeypatch.setattr(win32api, "CloseHandle", close)
-    argv = _python("pass")
     with pytest.raises(OSError) as caught:
-        procs.run_command(argv, timeout=5)
+        procs.run_command(argv, timeout=timeout)
     assert caught.value.filename == argv[0]
     assert caught.value.winerror == failure.winerror and caught.value.__cause__ is failure
     _assert_no_pipe_threads()
