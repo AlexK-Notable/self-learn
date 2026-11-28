@@ -381,9 +381,6 @@ def test_windows_toast_document_loads_in_winrt(name):
     ToastNotification(document)
 
 
-SETTINGS_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\" + notify_desktop.AUMID
-
-
 def _run_helper(home: Path, body: str) -> tuple[subprocess.CompletedProcess, str]:
     argv = notify_desktop.helper_argv(sys.executable, title="self-learn", body=body, url=UI)
     result = subprocess.run(argv, capture_output=True, timeout=notify_desktop.CALLER_TIMEOUT_SECONDS,
@@ -421,16 +418,38 @@ def test_windows_shown_toast_stays_in_action_center(scratch):
 
 @windows
 @pytest.mark.skipif(not _extra_installed(), reason="desktop extra not installed")
-def test_windows_switched_off_notifications_are_logged(scratch):
-    """The person switched self-learn's notifications off in Settings: the
-    helper shows nothing, exits 0 and says so in its one log line."""
-    import winreg
+@pytest.mark.parametrize(("setting", "shown"), [("DISABLED_FOR_APPLICATION", False),
+                                                ("DISABLED_BY_GROUP_POLICY", False),
+                                                ("unreadable", True)])
+def test_windows_switched_off_notifications_are_logged(monkeypatch, setting, shown):
+    """Notifications switched off for self-learn (or by policy): nothing is
+    shown and the outcome says why. A setting that cannot be read is taken
+    as on, as desktop-notifier does (its issue #95). The real WinRT module is
+    loaded; only the notifier is a stand-in, because writing the Settings
+    registry key on the runner did not change what WinRT reports."""
+    import winrt.windows.ui.notifications as toasts
 
-    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, SETTINGS_KEY, 0, winreg.KEY_ALL_ACCESS) as key:
-        winreg.SetValueEx(key, "Enabled", 0, winreg.REG_DWORD, 0)
-    try:
-        result, line = _run_helper(scratch, "switched off")
-    finally:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, SETTINGS_KEY)
-    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
-    assert line.endswith("notify: skipped: notifications are off for this session (DISABLED_FOR_APPLICATION)")
+    calls = []
+
+    class Notifier:
+        @property
+        def setting(self):
+            if setting == "unreadable":
+                raise OSError(-2147023728, "Element not found")
+            return toasts.NotificationSetting[setting]
+
+        def show(self, toast):
+            calls.append(toast)
+
+    class Manager:
+        @staticmethod
+        def create_toast_notifier(application_id):
+            assert application_id == notify_desktop.AUMID
+            return Notifier()
+
+    monkeypatch.setattr(toasts, "ToastNotificationManager", Manager)
+    outcome = notify_desktop._show(notify_desktop.toast_xml("t", "b", UI))
+    if shown:
+        assert (outcome, len(calls)) == ("shown", 1)
+    else:
+        assert (outcome, calls) == (f"skipped: notifications are off for this session ({setting})", [])

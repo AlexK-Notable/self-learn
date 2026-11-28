@@ -584,14 +584,14 @@ jobs:
             $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
             $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
             $linux = @($skips | Where-Object { $_.name -ceq 'test_linux_send_keeps_the_companion_script' -and $_.skipped.message -ceq 'Linux notification contract' })
-            $extraOnly = '^test_windows_(toast_document_loads_in_winrt\[.+\]|shown_toast_stays_in_action_center|switched_off_notifications_are_logged)$'
+            $extraOnly = '^test_windows_(toast_document_loads_in_winrt\[.+\]|shown_toast_stays_in_action_center|switched_off_notifications_are_logged\[.+\])$'
             $winrt = @($ran | Where-Object { $_ -cmatch $extraOnly })
             $noextra = @($skips | Where-Object { $_.name -cmatch $extraOnly -and $_.skipped.message -ceq 'desktop extra not installed' })
             $missing = @($native | Where-Object { $ran -cnotcontains $_ })
-            $expectRan = if ($mode -eq 'present') { 65 } else { 56 }
-            $expectSkips = if ($mode -eq 'present') { 1 } else { 10 }
-            $expectWinrt = if ($mode -eq 'present') { 9 } else { 0 }
-            $expectNoextra = if ($mode -eq 'present') { 0 } else { 9 }
+            $expectRan = if ($mode -eq 'present') { 67 } else { 56 }
+            $expectSkips = if ($mode -eq 'present') { 1 } else { 12 }
+            $expectWinrt = if ($mode -eq 'present') { 11 } else { 0 }
+            $expectNoextra = if ($mode -eq 'present') { 0 } else { 11 }
             if ($missing.Count -or $ran.Count -ne $expectRan -or $skips.Count -ne $expectSkips -or
                 $linux.Count -ne 1 -or $winrt.Count -ne $expectWinrt -or $noextra.Count -ne $expectNoextra) {
               $failures += "Unexpected notification test selection ($mode): ran $($ran.Count), skipped $($skips.Count), missing $($missing -join ', ')"
