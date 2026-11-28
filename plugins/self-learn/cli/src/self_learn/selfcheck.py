@@ -139,7 +139,7 @@ from .compilers import (
     reference_target_path,
 )
 from .compilers import surface_names_target as _surface_names_target
-from .hook_compiler import replay_examples
+from .hook_compiler import LOCALE_PIN_LINE, locale_problem, replay_examples
 from .hosts import POLICY_RULE, HostsError, ancestors_of, host_mode, host_slug, hosts_path, load_hosts, policy_changes, skill_dir_for
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .ledger_ops import (
@@ -1133,6 +1133,7 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     failures: list[str] = []
     checked = 0
     stale = 0
+    pinned: list[str] = []
 
     hosts_known = hosts_path(home).is_file()
     root = None
@@ -1170,6 +1171,8 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
             script = root / rel
             if live:
                 checked += 1
+                if LOCALE_PIN_LINE in str(meta.get("script") or ""):
+                    pinned.append(record.id)
                 if not script.is_file():
                     failures.append(
                         f"{record.id}: hook script {script} missing — run "
@@ -1207,6 +1210,19 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                     f"{record.status} but its script {script} still "
                     "exists; remove it and retire its settings.json entry"
                 )
+
+    if pinned:
+        # Fix round 1, m2: a pinned guard on a host whose grep cannot match
+        # under the pinned locale takes its fallback on every call (a deny
+        # guard blocks, a warning is silent), examples or not.
+        unusable = locale_problem()
+        if unusable is not None:
+            failures.append(
+                f"{', '.join(pinned)}: {unusable} — every pinned guard here "
+                "fails its locale check: a deny guard blocks every call it "
+                "matches, a warning stays silent; install the C.UTF-8 locale "
+                "(or GNU grep)"
+            )
 
     settings_path = claude_dir / "settings.json"
     commands, problem = _registered_hook_commands(settings_path)
@@ -1308,23 +1324,37 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     A guard runs here through its rule file and ``self-learn-hook.exe``
     (``hook_activation``'s Windows block), never through its Bash script, so
     the script is checked for presence and approved bytes only: no execute
-    bit, no Bash replay. A guard whose rule the evaluator cannot build is
-    INACTIVE ON THIS MACHINE, with the reason, and never counted as broken:
-    a guard activated on Linux in a shared ledger is not a Windows failure.
-    A guard whose rule file is placed must hold its current rule and replay
-    clean through the evaluator. Every exec-form registration of
-    ``self-learn-hook.exe`` must name a program that exists and, for a rule,
-    a rule file that loads (a missing deny rule blocks every call it
-    matches). Shell-form ``self-learn-*`` registrations are checked as on
-    Linux."""
+    bit, no Bash replay. Each live guard's state is decided on its own
+    (fix round 1, M4, :func:`hook_activation.record_registration`):
+    REGISTERED only when its rule file is its current rule, a regular file,
+    replays clean, and settings.json holds exactly self-learn's entry for it
+    (event, matcher, program, every argument, timeout, failure policy);
+    PLACED when the rule is there and nothing runs it (a delegated
+    activation); anything else that refers to the rule file FAILs. A guard
+    whose rule the evaluator cannot build is INACTIVE ON THIS MACHINE, with
+    the reason, never counted as broken (a guard activated on Linux in a
+    shared ledger is not a Windows failure), unless something here still
+    places or runs its rule, which FAILs. A retired guard whose rule file or
+    registration remains FAILs. Every ``self-learn-hook.exe evaluate`` entry
+    no live guard owns FAILs: a deny entry left naming a rule blocks, or
+    runs a rule nobody maintains. Shell-form ``self-learn-*`` registrations
+    are checked as on Linux. A misshapen settings.json is a FAIL naming
+    where, never a crash (m4)."""
     from pathlib import PureWindowsPath
 
     from . import hook_activation, hook_rules
+    from .primitives import fsops
 
     failures: list[str] = []
     inactive: list[str] = []
+    placed_only: list[str] = []
     checked = 0
     active = 0
+
+    settings_path = claude_dir / "settings.json"
+    _raw, data, problem, _bom, _crlf = hook_activation._read_settings_style(settings_path)  # noqa: SLF001
+    if problem is not None:
+        failures.append(problem)
 
     hosts_known = hosts_path(home).is_file()
     root = None
@@ -1333,6 +1363,13 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
             root = load_hosts(home).skills_root
         except HostsError as exc:
             failures.append(f"hosts.yaml unreadable: {exc}")
+
+    # Rule files a live guard's exact registration owns; every other
+    # `evaluate` entry is judged below.
+    owned: set[str] = set()
+
+    def _key(text: str) -> str:
+        return os.path.normcase(os.path.normpath(text))
 
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
@@ -1360,12 +1397,21 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                     )
                 continue
             script = root / rel
+            rule_path = claude_dir / "hooks" / hook_activation.rule_file_name(script.name)
+            still_there = rule_path.exists() or fsops.is_link(rule_path)
+            runs = hook_activation._mentions(data, rule_path)  # noqa: SLF001
             if not live:
                 if script.is_file():
                     failures.append(
                         f"{record.id}: INCOMPLETE SUPERSESSION — record is "
                         f"{record.status} but its script {script} still "
                         "exists; remove it and retire its settings.json entry"
+                    )
+                if still_there or runs:
+                    failures.append(
+                        f"{record.id}: record is {record.status} but its rule "
+                        f"{rule_path} is still " + ("registered" if runs else "placed")
+                        + " — remove the settings.json entry, then the file"
                     )
                 continue
             checked += 1
@@ -1375,7 +1421,7 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                     "`self-learn recompile`"
                 )
                 continue
-            if script.read_text(encoding="utf-8") != meta.get("script"):
+            if not hook_activation._script_bytes_match(script, meta.get("script")):  # noqa: SLF001
                 failures.append(
                     f"{record.id}: hook script {script} drifted from "
                     "the approved bytes — never hand-edit a generated "
@@ -1387,52 +1433,32 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
             try:
                 artifact, _note = hook_activation.rule_for_record(record, meta, script.name, examples)
             except hook_activation.RuleUnavailable as exc:
-                inactive.append(f"{record.id}: inactive on this machine — {exc.reason}")
+                if still_there or runs:
+                    failures.append(
+                        f"{record.id}: cannot run on this machine ({exc.reason}) "
+                        f"but its rule {rule_path} is still "
+                        + ("registered" if runs else "placed")
+                        + f" — `self-learn hook deactivate {record.id}`"
+                    )
+                else:
+                    inactive.append(f"{record.id}: inactive on this machine — {exc.reason}")
                 continue
-            rule_path = claude_dir / "hooks" / hook_activation.rule_file_name(script.name)
-            if not rule_path.is_file():
-                continue  # built and replayed (build_rule), not activated here
-            try:
-                placed = rule_path.read_bytes()
-                loaded = hook_rules.load_rule(placed)
-            except (OSError, hook_rules.RuleError) as exc:
-                failures.append(
-                    f"{record.id}: rule file {rule_path} does not load ({exc}) — "
-                    "a hand edit; remove it, then `self-learn hook activate "
-                    f"{record.id}`"
-                )
-                continue
-            # Current = the same rule; the examples may come from the
-            # proposal fallback activation reads (`_examples_for`).
-            keep = lambda art: {k: v for k, v in art.items() if k not in ("examples", "digest")}  # noqa: E731
-            if keep(loaded.data) != keep(artifact):
-                failures.append(
-                    f"{record.id}: rule file {rule_path} is not this guard's "
-                    f"current rule — run `self-learn hook activate {record.id}`, "
-                    "which replaces it"
-                )
-                continue
-            mismatches = hook_rules.check_examples(loaded)
-            if mismatches:
-                failures.append(
-                    f"{record.id}: rule file {rule_path} failed its replay — "
-                    + "; ".join(mismatches)
-                )
-                continue
-            active += 1
+            state, detail = hook_activation.record_registration(
+                record, meta, script.name, claude_dir, data, artifact=artifact
+            )
+            if state == "registered":
+                active += 1
+                owned.add(_key(str(rule_path)))
+            elif state == "placed":
+                placed_only.append(record.id)
+            elif state == "broken":
+                failures.append(f"{record.id}: {detail}")
+                owned.add(_key(str(rule_path)))  # reported once, here
 
-    settings_path = claude_dir / "settings.json"
-    _raw, data, problem, _bom, _crlf = hook_activation._read_settings_style(settings_path)  # noqa: SLF001
-    if problem is not None:
-        failures.append(problem)
     registrations = 0
     for items in (data.get("hooks") or {}).values():
         for item in items:
-            if not isinstance(item, dict):
-                continue
             for handler in item.get("hooks") or []:
-                if not isinstance(handler, dict):
-                    continue
                 cmd = handler.get("command")
                 if not isinstance(cmd, str):
                     continue
@@ -1440,22 +1466,34 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                 if isinstance(args, list):
                     if PureWindowsPath(cmd).name.lower() != hook_activation.HOOK_PROGRAM:
                         continue
+                    if not args or args[0] != "evaluate":
+                        continue  # the plugin's own hooks: not a guard
                     registrations += 1
+                    rule_arg = _rule_argument(args)
+                    if rule_arg is not None and _key(rule_arg) in owned:
+                        continue
+                    if hosts_known:
+                        failures.append(
+                            f"settings.json runs {cmd} evaluate on "
+                            f"{rule_arg or 'no rule file'}, which no live guard on this "
+                            "machine owns (a retired lesson's entry, or one written by "
+                            "hand) — remove the entry"
+                        )
+                        continue
                     if not Path(cmd).is_file():
                         failures.append(
                             f"settings.json runs {cmd}, which is missing — "
                             "reinstall self-learn (`uv sync`)"
                         )
-                    if args[:2] == ["evaluate", "--rule"] and len(args) == 3 and isinstance(args[2], str):
-                        try:
-                            hook_rules.load_rule(Path(args[2]).read_bytes())
-                        except (OSError, hook_rules.RuleError) as exc:
-                            failures.append(
-                                f"settings.json runs the rule {args[2]}, which is "
-                                f"missing or unusable ({exc}); a deny rule then "
-                                "blocks every call it matches — `self-learn hook "
-                                "deactivate` its lesson, or remove the entry"
-                            )
+                    try:
+                        hook_rules.load_rule(Path(rule_arg or "").read_bytes())
+                    except (OSError, hook_rules.RuleError) as exc:
+                        failures.append(
+                            f"settings.json runs the rule {rule_arg}, which is "
+                            f"missing or unusable ({exc}); a deny rule then "
+                            "blocks every call it matches — `self-learn hook "
+                            "deactivate` its lesson, or remove the entry"
+                        )
                     continue
                 try:
                     token = shlex.split(cmd)[0] if cmd.strip() else cmd
@@ -1473,8 +1511,10 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                     )
 
     note = ""
+    if placed_only:
+        note += f"; {len(placed_only)} placed but not registered ({', '.join(placed_only)})"
     if inactive:
-        note = f"; {len(inactive)} inactive on this machine ({'; '.join(inactive)})"
+        note += f"; {len(inactive)} inactive on this machine ({'; '.join(inactive)})"
     if failures:
         return Verdict.FAIL, "; ".join(failures) + note
     if not hosts_known:
@@ -1489,9 +1529,22 @@ def _check_hooks_windows(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
             f"0 hook-routed records; {registrations} registration(s) resolvable"
         )
     return Verdict.PASS, (
-        f"{checked} live hook script(s) intact; {active} rule(s) active on this "
+        f"{checked} live hook script(s) intact; {active} rule(s) registered on this "
         f"machine{note}; {registrations} registration(s) resolvable"
     )
+
+
+def _rule_argument(args: list) -> str | None:
+    """The rule file an ``evaluate`` argument list names, in either spelling
+    the evaluator accepts (``--rule <file>`` or ``--rule=<file>``)."""
+    for n, arg in enumerate(args):
+        if not isinstance(arg, str):
+            continue
+        if arg == "--rule" and n + 1 < len(args) and isinstance(args[n + 1], str):
+            return args[n + 1]
+        if arg.startswith("--rule="):
+            return arg.split("=", 1)[1]
+    return None
 
 
 def _check_surface(home: Path, claude_dir: Path) -> tuple[Verdict, str]:

@@ -3114,6 +3114,8 @@ def _prepare_one_motion_hook(
     # one happens to exist.
     meta = _hook_route_meta(hook, rel, data["script"], data["examples"])
     snippet = settings_snippet(list(hook["tools"]), spec.target.name, event=hook_event(hook))
+    if os.name == "nt":
+        snippet = _native_snippet(hook, spec.target.name, record.id)
     return _HookRoute(
         spec=spec, meta=meta, snippet=snippet, script=data["script"]
     )
@@ -3200,6 +3202,8 @@ def _prepare_hook_route(
     # replay for ANY normally-routed record.
     meta = _hook_route_meta(hook, rel, script, data["examples"])
     snippet = settings_snippet(list(hook["tools"]), spec.target.name, event=hook_event(hook))
+    if os.name == "nt":
+        snippet = _native_snippet(hook, spec.target.name, record.id)
     return _HookRoute(spec=spec, meta=meta, snippet=snippet, script=script)
 
 
@@ -3277,6 +3281,17 @@ def _hook_manual_steps(
             f"{_HOOK_PLACED_STEP} (hooks, under {event}):\n     {snippet}",
         ]
     target = record_id or "<id>"
+    if os.name == "nt":
+        # Native Windows (fix round 1, w5-activation n1): activation there
+        # writes a rule file and registers self-learn-hook.exe for it.
+        rule = name.removesuffix(".sh") + ".rule.json"
+        return [
+            _HOOK_MANUAL_HEADER,
+            f"{_HOOK_MANUAL_STEP1} {target} — it writes the ~/.claude/hooks/{rule} "
+            "rule file, registers self-learn-hook.exe to run it and verifies it "
+            '(from an agent\'s shell add --note "<why>")',
+            f"{_HOOK_MANUAL_STEP2} (hooks, under {event}):\n     {snippet}",
+        ]
     return [
         _HOOK_MANUAL_HEADER,
         f"{_HOOK_MANUAL_STEP1} {target} — it places the ~/.claude/hooks/{name} "
@@ -3284,6 +3299,21 @@ def _hook_manual_steps(
         '--note "<why>")',
         f"{_HOOK_MANUAL_STEP2} (hooks, under {event}):\n     {snippet}",
     ]
+
+
+def _native_snippet(hook: dict, name: str, record_id: str) -> str:
+    """The settings.json entry native Windows activation registers for this
+    route (fix round 1, w5-activation n1), in :func:`settings_snippet`'s
+    shape: the exec-form handler running ``self-learn-hook.exe evaluate``
+    on the rule file, never a shell command naming the script."""
+    from . import hook_activation, selfcheck
+
+    rule = selfcheck.claude_runtime_dir() / "hooks" / hook_activation.rule_file_name(name)
+    entry = hook_activation.rule_hook_entry(
+        hook_activation.hook_program(), rule, hook_mode(hook), record_id
+    )
+    item = {"matcher": "|".join(hook["tools"]), "hooks": [entry]}
+    return f"{json.dumps(hook_event(hook))}: [{json.dumps(item)}]"
 
 
 def without_hook_manual_steps(notes: list[str]) -> list[str]:
@@ -13031,6 +13061,10 @@ class HookRefreshResult:
     #: Gate r2 G2: record id -> sha256 of the stored bytes it replaced, i.e.
     #: the bytes self-learn had placed before this regeneration.
     previous: dict[str, str] = field(default_factory=dict)
+    #: Fix round 1 (w5-activation B1): record id -> whether its placed file
+    #: existed when the regeneration was planned. The host write refuses a
+    #: file that changed, or appeared or vanished, since that check.
+    placed_before: dict[str, bool] = field(default_factory=dict)
 
 
 def _warn_refresh_refusal(
@@ -13168,7 +13202,130 @@ def _pending_verdicts(
                 f"{script_abs} was changed after self-learn's write failed — left as it "
                 "is; self-learn places it only if the file is put back as it was"
             )
+    recorded = set(hook_pending.read(home))
+    for rid in sorted(_interrupted_regenerations(home, only_records)):
+        if rid not in recorded:
+            place.append(rid)
     return place, left, done
+
+
+#: The subject :func:`_refresh_commit` gives its ledger commit, up to the count.
+REGENERATE_SUBJECT = "self-learn: regenerate warning hook(s) ("
+
+
+def _script_at(home: Path, rev: str, rel: str) -> str | None:
+    """``routing.hook.script`` of the record at *rel* in ledger revision
+    *rev*, or ``None`` (no such revision or file, or not a hook record)."""
+    try:
+        proc = gitops._git(home, "show", f"{rev}:{rel}")  # noqa: SLF001 -- a bounded read
+    except gitops.GitOpsError:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        record = Record.from_text(proc.stdout)
+    except ledger_ops.UNREADABLE_RECORD_ERRORS:
+        return None
+    script = ((record.routing or {}).get("hook") or {}).get("script")
+    return script if isinstance(script, str) else None
+
+
+def _regenerated_from(home: Path, path: Path, stored: str) -> str | None:
+    """The script this record held before the ledger commit that put
+    *stored* there, when that commit is a warning-hook regeneration
+    (:data:`REGENERATE_SUBJECT`); ``None`` otherwise. Read from the ledger's
+    own history: the committed state says what the host file should hold,
+    and what self-learn had placed before."""
+    try:
+        rel = path.relative_to(home).as_posix()
+        log = gitops._git(home, "log", "-n", "20", "--format=%H%x09%s", "--", rel)  # noqa: SLF001
+    except (ValueError, gitops.GitOpsError):
+        return None
+    if log.returncode != 0:
+        return None
+    for line in log.stdout.splitlines():
+        sha, _, subject = line.partition("\t")
+        before = _script_at(home, f"{sha}^", rel)
+        if before == stored:
+            continue  # this commit left the script as it was
+        if not subject.startswith(REGENERATE_SUBJECT) or _script_at(home, sha, rel) != stored:
+            return None
+        return before
+    return None
+
+
+def _interrupted_regenerations(
+    home: Path, only_records: Iterable[str] | None = None
+) -> dict[str, str]:
+    """Fix round 1 (w5-activation M1), read only: live warning hooks whose
+    regeneration was committed to the ledger but never placed, with nothing
+    recorded pending (the process stopped between the ledger commit and
+    the host write). Record id -> sha256 of the bytes self-learn had placed
+    before. A hook qualifies only when its placed file holds exactly the
+    script the record held before its latest regeneration commit; any other
+    content is a person's, and is left alone.
+
+    On native Windows a warning whose placed script is current but whose
+    activated rule file is self-learn's older rule (``ours``) qualifies
+    too, with its current bytes: the rule is what runs there (M3)."""
+    wanted = set(only_records) if only_records is not None else None
+    found: dict[str, str] = {}
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except ledger_ops.UNREADABLE_RECORD_ERRORS:
+                continue
+            if wanted is not None and record.id not in wanted:
+                continue
+            routing = record.routing or {}
+            meta = routing.get("hook") or {}
+            stored = meta.get("script")
+            if (
+                routing.get("destination") != "hook"
+                or not domain.is_canon_live(record)
+                or hook_mode(meta) != "warn"
+                or not isinstance(stored, str)
+            ):
+                continue
+            try:
+                where = _hook_script_location(home, record, [])
+            except VerbError:
+                continue
+            if where is None or where[1].is_symlink() or not where[1].is_file():
+                continue
+            try:
+                on_disk = where[1].read_bytes()
+            except OSError:
+                continue
+            if on_disk == stored.encode("utf-8"):
+                if os.name == "nt" and _rule_is_behind(record, where[1].name):
+                    found[record.id] = compiled.sha256_hex(on_disk)
+                continue
+            before = _regenerated_from(home, path, stored)
+            if before is not None and on_disk == before.encode("utf-8"):
+                found[record.id] = compiled.sha256_hex(on_disk)
+    return found
+
+
+def _rule_is_behind(record: Record, script_name_: str) -> bool:
+    """Native Windows: this record's activated rule file is self-learn's
+    older rule for it (``ours``), not its current one."""
+    from . import hook_activation, hook_rules, selfcheck
+
+    meta = (record.routing or {}).get("hook") or {}
+    rule_path = selfcheck.claude_runtime_dir() / "hooks" / hook_activation.rule_file_name(script_name_)
+    try:
+        artifact, _note = hook_activation.rule_for_record(record, meta, script_name_, meta.get("examples"))
+    except hook_activation.RuleUnavailable:
+        return False
+    state, _prior = hook_activation._classify_rule(  # noqa: SLF001
+        rule_path, hook_rules.dumps_rule(artifact), record.id
+    )
+    return state == "ours"
 
 
 def pending_warn_hook_placements(
@@ -13296,6 +13453,13 @@ def refresh_warn_hooks(
     todo, result.refused = _plan_warn_hook_refresh(home, only_records)
     if not todo:
         return result
+    for _, planned, _ in todo:
+        try:
+            where = _hook_script_location(home, planned, [])
+        except VerbError:
+            where = None
+        if where is not None:
+            result.placed_before[planned.id] = where[1].exists() or where[1].is_symlink()
     hold = sentinel.hold()  # the autosync pause every mutating verb takes
     sentinel.heartbeat()
     try:
@@ -13462,10 +13626,18 @@ def recompile(
     # S-133: a placed warning hook whose stored bytes the current
     # compiler no longer produces is regenerated first (ledger only, never a
     # deny guard); the hook re-apply below writes the new bytes to the host.
-    # An outdated one a person edited is left: out of the re-apply too.
+    # An outdated one whose regeneration was refused, for ANY reason (a
+    # person's edit, no examples, a failed replay, ...), is left: out of the
+    # re-apply too (fix round 1, w5-activation B1: a refused regeneration
+    # writes nothing to that file).
     hand_edited_hooks: set[str] = set()
     regenerated_from: dict[str, str] = {}
     pending_place: list[str] = []
+    #: B1: record id -> the states (sha256, or None for "missing") its
+    #: placed file may be in, under the host lock, for a regenerated or
+    #: pending hook's write to go ahead; anything else is a change made
+    #: since the plan, and is left as it is.
+    expected_prior: dict[str, set[str | None]] = {}
     if not _adopt_list(adopt):
         refresh = refresh_warn_hooks(
             home,
@@ -13480,10 +13652,18 @@ def recompile(
         regenerated_from = dict(refresh.previous)
         for rid, why in sorted(refresh.refused.items()):
             result.warnings.append(f"{rid}: warning hook not regenerated — {why}")
-            if why.startswith(WARN_HOOK_HAND_EDITED):
-                hand_edited_hooks.add(rid)
+            hand_edited_hooks.add(rid)
         # Gate r2: hooks recorded pending by an earlier failed write.
         pending_place, pending_left, pending_done = _pending_verdicts(home, only_records)
+        # M1: a hook this run just regenerated is this run's to place, not an
+        # interrupted earlier one (its file still holds the old bytes); a
+        # recorded pending entry stays, so its placement drops it.
+        from . import hook_pending as _pending_cache
+
+        recorded = set(_pending_cache.read(home))
+        pending_place = [
+            rid for rid in pending_place if rid in recorded or rid not in refresh.regenerated
+        ]
         for rid, why in sorted(pending_left.items()):
             result.warnings.append(f"{rid}: pending warning hook not placed — {why}")
             hand_edited_hooks.add(rid)
@@ -13491,6 +13671,9 @@ def recompile(
             from . import hook_pending
 
             hook_pending.drop(home, pending_done, earlier_commits=span_commits)
+        expected_prior = _expected_prior_states(
+            home, refresh, pending_place, only_records
+        )
 
     # Enumerate targets off ALL resolved records that ever landed in canon
     # (the ledger is the source of truth — targets are derived, never
@@ -14540,6 +14723,19 @@ def recompile(
                         )
                         result.warnings.append(f"{script_abs}: {exc}")
                         continue
+                if (
+                    record.id in expected_prior
+                    and _placed_state(script_abs) not in expected_prior[record.id]
+                ):
+                    reason = (
+                        "changed since self-learn checked it (a person's edit, "
+                        "deletion or new file) — left as it is"
+                    )
+                    result.entries.append(
+                        RecompileEntry(target=script_abs, changed=False, skipped=reason)
+                    )
+                    result.warnings.append(f"{script_abs}: {reason}")
+                    continue
                 hook_snapshot = _snapshot_host_files([script_abs])
                 apply_result = _write_hook_script(
                     script_abs, (record.routing or {})["hook"]["script"]
@@ -14695,7 +14891,92 @@ def recompile(
     finally:
         hold.release()
     _confirm_regenerated(home, result, regenerated_from, pending_place, span_commits)
+    if os.name == "nt":
+        _refresh_rule_files(home, result, span_commits)
     return result
+
+
+def _placed_state(script_abs: Path) -> str | None:
+    """B1: a placed file's state for :func:`_expected_prior_states`: the
+    sha256 of its bytes, ``None`` when there is nothing at the path, and
+    ``"link"`` for a symlink (never an expected state)."""
+    if script_abs.is_symlink():
+        return "link"
+    if not script_abs.exists():
+        return None
+    try:
+        return compiled.sha256_hex(script_abs.read_bytes())
+    except OSError:
+        return "unreadable"
+
+
+def _expected_prior_states(
+    home: Path,
+    refresh: HookRefreshResult,
+    pending_place: list[str],
+    only_records: Iterable[str] | None,
+) -> dict[str, set[str | None]]:
+    """B1: for each hook this recompile regenerated or places from pending,
+    the placed-file states its host write may replace: the bytes
+    self-learn had placed (or nothing, when the file was missing at the
+    plan) and the new bytes themselves. Read when the regeneration's
+    planning has just finished; checked again under the host lock."""
+    from . import hook_pending
+
+    expected: dict[str, set[str | None]] = {}
+    for rid in refresh.regenerated:
+        try:
+            record = Record.from_path(ledger_ops.find_record_path(home, rid))
+        except (LedgerOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS):
+            continue
+        new = str(((record.routing or {}).get("hook") or {}).get("script") or "")
+        before = refresh.previous.get(rid) if refresh.placed_before.get(rid, True) else None
+        expected[rid] = {before, compiled.sha256_hex(new.encode("utf-8"))}
+    entries = hook_pending.read(home)
+    interrupted = _interrupted_regenerations(home, only_records) if pending_place else {}
+    for rid in pending_place:
+        try:
+            record = Record.from_path(ledger_ops.find_record_path(home, rid))
+        except (LedgerOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS):
+            continue
+        new = str(((record.routing or {}).get("hook") or {}).get("script") or "")
+        states: set[str | None] = {compiled.sha256_hex(new.encode("utf-8"))}
+        entry = entries.get(rid)
+        if entry is not None:
+            states.add(None if entry.get("missing") else entry.get("placed_sha256"))
+        elif rid in interrupted:
+            states.add(interrupted[rid])
+        expected[rid] = states
+    return expected
+
+
+def _refresh_rule_files(home: Path, result: RecompileResult, span_commits: list[str]) -> None:
+    """Native Windows (fix round 1, w5-activation M3): a regenerated or
+    placed warning hook that is activated here runs its RULE FILE, so the
+    rule follows the new script (:func:`hook_activation.refresh_rule_file`:
+    rewritten and replayed when it is self-learn's, never registered or
+    unregistered). One that cannot be refreshed moves to ``hooks_pending``
+    with the reactivation it needs; the next run tries again."""
+    from . import hook_activation, selfcheck
+
+    done = [*result.hooks_regenerated, *result.hooks_placed]
+    if not done:
+        return
+    claude_dir = selfcheck.claude_runtime_dir()
+    with _ledger_write(home, earlier_commits=span_commits) as recovered:
+        intents.announce_recovered(recovered)
+        for rid in done:
+            try:
+                record = Record.from_path(ledger_ops.find_record_path(home, rid))
+            except (LedgerOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS):
+                continue
+            warning = hook_activation.refresh_rule_file(home, record, claude_dir)
+            if warning is None:
+                continue
+            result.warnings.append(warning)
+            result.hooks_pending[rid] = warning
+            result.hooks_regenerated = [r for r in result.hooks_regenerated if r != rid]
+            result.hooks_placed = [r for r in result.hooks_placed if r != rid]
 
 
 def _confirm_regenerated(

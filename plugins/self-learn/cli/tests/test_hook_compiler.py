@@ -300,8 +300,11 @@ class TestReplay:
 #: script now pins `LC_ALL=C.UTF-8` after its ERR trap (eight lines,
 #: `hook_compiler._LOCALE_PIN`); the bytes without those lines are exactly
 #: the previous pin's (`test_the_previous_emitter_is_the_current_minus_the_pin`).
-#: The old pin was 540bc411...651c1.
-DENY_ORACLE_SHA256 = "c079682314d788479e0f78b0b69728830fd6043ea941431138beb94bf201dfaf"
+#: The old pin was 540bc411...651c1. Re-pinned again in fix round 1 (m2):
+#: the deny pin's fallback line names its prerequisite
+#: (`hook_compiler.LOCALE_FAILURE`) instead of "guard regex failed"; the
+#: previous-emitter bytes are unchanged. The round-1 pin was c0796823...1dfaf.
+DENY_ORACLE_SHA256 = "2a6fd06ef888c93a417e64a878021df164ccc11d6938236412b8c1df43bb78a9"
 DENY_ORACLE_PREVIOUS_SHA256 = "540bc41142c528a4dd9bf76b334d82e17820f7317732ea71104f64c44a1651c1"
 DENY_ORACLE_ARGS = (
     "lrn-0a1b2c3d",

@@ -296,6 +296,8 @@ def _undo(progress: _Progress) -> list[str]:
     backup file) and never the ledger record itself; the next call's
     recover-or-refuse path (§7.2a.5) is what reconciles that dirty
     record, not this function."""
+    if os.name == "nt" and progress.rule_path is not None:
+        return _undo_windows(progress)
     residual: list[str] = []
     if progress.settings_written:
         write_exc: Exception | None = None
@@ -320,10 +322,6 @@ def _undo(progress: _Progress) -> list[str]:
                 f"settings.json restore failed: {detail} — the registration "
                 "change made by this call may still be live"
             )
-    if os.name == "nt" and progress.rule_path is not None and (
-        progress.rule_written or progress.rule_removed
-    ):
-        _undo_rule(progress, residual)
     if progress.link_placed:
         try:
             _write_claude_runtime(link=progress.link, unlink=True)
@@ -1223,18 +1221,24 @@ def deactivate(
 # no Bash to run a generated guard, so activation there writes the guard's
 # RULE FILE (:mod:`hook_rules`, built by :func:`hook_compiler.rule_artifact_for_hook`)
 # where Linux places the symlink, and registers it in exec form: Claude Code
-# spawns ``self-learn-hook.exe evaluate --rule <file>`` directly, no shell
-# (plan 2.2). An entry's identity is event + matcher + command + args, and the
-# rule file it names carries the rule's digest. The guarantees are the Linux
-# path's: everything decidable is decided before the first write, the writes
-# land in the same order (backup, placement, replay, settings, doctor; the
-# reverse for deactivation), each is marked before it is attempted, and any
-# failure undoes exactly what this call did. Nothing here runs on Linux:
-# :func:`activate` and :func:`deactivate` branch to it only when
+# spawns ``self-learn-hook.exe evaluate --rule <file> --mode <mode> --record <id>``
+# directly, no shell (plan 2.2). The registration itself carries the mode and
+# the record, so a damaged rule file cannot choose its own policy (fix round
+# 1, M5). An entry is self-learn's only when its event, matcher and whole
+# handler are exactly what self-learn writes now; any other handler that
+# refers to the rule file, in any spelling, is a reference self-learn does
+# not own, and both activation and deactivation refuse while one exists
+# (M7). The guarantees are the Linux path's: everything decidable is decided
+# before the first write, the writes land in the same order (backup,
+# placement, replay, settings, doctor; the reverse for deactivation), each is
+# marked before it is attempted, and any failure undoes exactly what this
+# call did, in an order that never leaves a registration without its rule
+# (:func:`_undo_windows`, M8). Nothing here runs on Linux: :func:`activate`,
+# :func:`deactivate` and :func:`_undo` branch to it only when
 # ``os.name == "nt"``.
 
 #: The exec-form entry's ``timeout`` (Claude Code reads it in seconds). The
-#: evaluator's own deadline is :data:`hook_rules.MATCH_DEADLINE_S` (2 s).
+#: evaluator bounds its own reading and deciding to 4 s (``hook_entry``).
 RULE_HOOK_TIMEOUT_S = 5
 
 #: The console script Claude Code runs for a rule (``[project.scripts]``).
@@ -1316,15 +1320,17 @@ def rule_for_record(
     )
 
 
-def rule_hook_entry(program: Path, rule_path: Path, mode: str) -> dict:
-    """The exec-form handler (plan 2.2, 2.3): ``onFailure: block`` for a
-    deny rule, so a program that cannot start or times out blocks the call
-    as the guard would (Claude Code 2.1.295 or later; an older one runs the
-    call); a warning keeps the default, which lets the call through."""
+def rule_hook_entry(program: Path, rule_path: Path, mode: str, record_id: str) -> dict:
+    """The exec-form handler (plan 2.2, 2.3). ``--mode`` and ``--record``
+    tell the evaluator which policy applies when the rule file cannot
+    decide (M5). ``onFailure: block`` for a deny rule, so a program that
+    cannot start or times out blocks the call as the guard would (Claude
+    Code 2.1.295 or later; an older one runs the call); a warning keeps the
+    default, which lets the call through."""
     entry: dict = {
         "type": "command",
         "command": str(program),
-        "args": ["evaluate", "--rule", str(rule_path)],
+        "args": ["evaluate", "--rule", str(rule_path), "--mode", mode, "--record", record_id],
         "timeout": RULE_HOOK_TIMEOUT_S,
     }
     if mode == "deny":
@@ -1337,9 +1343,10 @@ def _read_settings_style(
 ) -> tuple[bytes | None, dict, str | None, bool, bool]:
     """:func:`_read_settings`, plus the file's form: whether it starts with a
     UTF-8 byte-order mark and whether it uses CRLF line endings, which a
-    rewrite keeps (Windows editors write both). Also refuses a ``hooks``
-    value that is not an object, or an event value that is not a list,
-    rather than guessing what a person meant."""
+    rewrite keeps (Windows editors write both). Every level a hook lives at
+    is checked once, here (m4): ``hooks`` an object, each event a list, each
+    item an object whose ``hooks`` (when present) is a list of objects. Any
+    other shape is a problem naming where it is, never guessed at."""
     if not settings_path.is_file():
         return None, {}, None, False, False
     raw = settings_path.read_bytes()
@@ -1355,8 +1362,20 @@ def _read_settings_style(
     if hooks_cfg is not None and not isinstance(hooks_cfg, dict):
         return raw, {}, f'{settings_path}: "hooks" is not a JSON object', bom, crlf
     for event, items in (hooks_cfg or {}).items():
+        where = f'{settings_path}: "hooks"."{event}"'
         if not isinstance(items, list):
-            return raw, {}, f'{settings_path}: "hooks"."{event}" is not a list', bom, crlf
+            return raw, {}, f"{where} is not a list", bom, crlf
+        for n, item in enumerate(items):
+            if not isinstance(item, dict):
+                return raw, {}, f"{where}[{n}] is not an object", bom, crlf
+            handlers = item.get("hooks")
+            if handlers is None:
+                continue
+            if not isinstance(handlers, list):
+                return raw, {}, f'{where}[{n}]."hooks" is not a list', bom, crlf
+            for k, handler in enumerate(handlers):
+                if not isinstance(handler, dict):
+                    return raw, {}, f'{where}[{n}]."hooks"[{k}] is not an object', bom, crlf
     return raw, data, None, bom, crlf
 
 
@@ -1370,48 +1389,49 @@ def _render_settings(data: dict, bom: bool, crlf: bool) -> bytes:
     return (_UTF8_BOM if bom else b"") + text.encode("utf-8")
 
 
-def _names_rule(handler: dict, rule_path: Path) -> bool:
+def _same_path(text: str, rule_path: Path) -> bool:
+    return os.path.normcase(os.path.normpath(text)) == os.path.normcase(os.path.normpath(str(rule_path)))
+
+
+def _refers_to_rule(handler: dict, rule_path: Path) -> bool:
+    """Whether *handler* refers to this rule file in ANY spelling (M7): an
+    argument that is the path, an ``--option=<path>`` argument, or a shell
+    command that contains the path. Detection only; ownership is
+    :func:`_kind`'s."""
     args = handler.get("args")
-    return (
-        isinstance(args, list)
-        and len(args) >= 3
-        and args[:2] == ["evaluate", "--rule"]
-        and isinstance(args[2], str)
-        and os.path.normcase(args[2]) == os.path.normcase(str(rule_path))
-    )
+    if isinstance(args, list):
+        for arg in args:
+            if not isinstance(arg, str):
+                continue
+            value = arg.split("=", 1)[1] if arg.startswith("--") and "=" in arg else arg
+            if _same_path(value, rule_path):
+                return True
+    command = handler.get("command")
+    if isinstance(command, str):
+        target = os.path.normcase(os.path.normpath(str(rule_path)))
+        if target in os.path.normcase(command.replace("/", os.sep)):
+            return True
+    return False
 
 
 def _mentions(data: dict, rule_path: Path) -> list[tuple[str, dict, dict]]:
-    """Every ``(event, item, handler)`` in settings.json whose handler runs
-    this rule file, under ANY event and matcher: a registration that names
-    our file in a form we did not write is still about our rule."""
+    """Every ``(event, item, handler)`` in settings.json whose handler refers
+    to this rule file, under ANY event and matcher, in ANY spelling."""
     found: list[tuple[str, dict, dict]] = []
     for event, items in (data.get("hooks") or {}).items():
         for item in items:
-            if not isinstance(item, dict) or not isinstance(item.get("hooks"), list):
-                continue
-            for handler in item["hooks"]:
-                if isinstance(handler, dict) and _names_rule(handler, rule_path):
+            for handler in item.get("hooks") or []:
+                if _refers_to_rule(handler, rule_path):
                     found.append((str(event), item, handler))
     return found
 
 
 def _kind(handler: dict, entry: dict) -> str:
-    """``exact``: the handler self-learn writes now. ``moved``: the same,
-    run by a ``self-learn-hook.exe`` at another path (an install that
-    moved). ``edited``: anything else."""
-    from pathlib import PureWindowsPath
-
-    if handler == entry:
-        return "exact"
-    command = handler.get("command")
-    if (
-        isinstance(command, str)
-        and PureWindowsPath(command).name.lower() == HOOK_PROGRAM
-        and {**handler, "command": entry["command"]} == entry
-    ):
-        return "moved"
-    return "edited"
+    """``exact``: the handler self-learn writes now. ``edited``: anything
+    else, including the same handler run by another ``self-learn-hook.exe``
+    (an install that moved): nothing proves that program was self-learn's,
+    so it is never removed automatically (M7)."""
+    return "exact" if handler == entry else "edited"
 
 
 def _describe(mention: tuple[str, dict, dict], event: str, matcher: str, entry: dict) -> str:
@@ -1422,8 +1442,6 @@ def _describe(mention: tuple[str, dict, dict], event: str, matcher: str, entry: 
     if found != matcher:
         shown = repr(found) if isinstance(found, str) else "no matcher"
         return f"registered under matcher {shown}, expected {matcher!r}"
-    if _kind(handler, entry) == "moved":
-        return f"run by another {HOOK_PROGRAM} ({handler.get('command')}), expected {entry['command']}"
     keys = sorted(set(handler) | set(entry))
     differ = [k for k in keys if handler.get(k) != entry.get(k)]
     return "its " + ", ".join(differ) + " differ from what self-learn writes"
@@ -1438,7 +1456,7 @@ def _remove_handlers(data: dict, event: str, targets: list[dict]) -> tuple[dict,
     new_event_list = []
     changed = False
     for item in event_list:
-        if not isinstance(item, dict) or not isinstance(item.get("hooks"), list):
+        if not isinstance(item.get("hooks"), list):
             new_event_list.append(item)
             continue
         survivors = [h for h in item["hooks"] if not any(h is t for t in targets)]
@@ -1468,9 +1486,11 @@ def _remove_handlers(data: dict, event: str, targets: list[dict]) -> tuple[dict,
 def _classify_rule(rule_path: Path, want: bytes | None, record_id: str) -> tuple[str, bytes | None]:
     """Non-mutating, the rule file's twin of :func:`_classify_symlink`:
     ``absent``; ``matches`` (already *want*, byte for byte); ``ours`` (a rule
-    self-learn wrote for this record, its digest intact, but other bytes: an
-    older rule); ``conflict`` (a link, a folder, a file whose digest fails,
-    a hand edit, or another record's rule). Returns the bytes found."""
+    self-learn wrote for this record, byte for byte as self-learn writes a
+    rule, but an older one); ``conflict`` (a link, a folder, a file whose
+    digest fails, a valid rule whose bytes are not self-learn's layout, i.e.
+    a hand reformat, or another record's rule). Byte identity, not only the
+    digest, is what protects a hand edit (m5). Returns the bytes found."""
     from . import hook_rules
 
     if fsops.is_link(rule_path):
@@ -1489,7 +1509,25 @@ def _classify_rule(rule_path: Path, want: bytes | None, record_id: str) -> tuple
         loaded = hook_rules.load_rule(prior)
     except hook_rules.RuleError:
         return "conflict", prior
-    return ("ours" if loaded.record_id == record_id else "conflict"), prior
+    if loaded.record_id != record_id or hook_rules.dumps_rule(loaded.data) != prior:
+        return "conflict", prior
+    return "ours", prior
+
+
+def _script_bytes_match(script_abs: Path, approved: object) -> bool:
+    """The Windows hand-edit check on the host script (m5): its bytes are the
+    approved bytes, or exactly those with every LF turned into CRLF (the
+    form Git for Windows' ``core.autocrlf=true`` checks a shared repository
+    out in). Anything else, a CRLF-only edit of another shape included, is a
+    hand edit."""
+    if not isinstance(approved, str):
+        return False
+    try:
+        data = script_abs.read_bytes()
+    except OSError:
+        return False
+    want = approved.encode("utf-8")
+    return data == want or data == want.replace(b"\n", b"\r\n")
 
 
 def _write_rule_runtime(rule_path: Path, *, rule_bytes: bytes | None = None,
@@ -1506,10 +1544,9 @@ def _write_rule_runtime(rule_path: Path, *, rule_bytes: bytes | None = None,
         fsops.atomic_write(rule_path, rule_bytes)
 
 
-def _undo_rule(progress: _Progress, residual: list[str]) -> None:
-    """:func:`_undo`'s rule-file step: put back the bytes the file held
-    before this call, or remove it when it did not exist; decided by
-    reading back, as the settings restore is."""
+def _restore_rule(progress: _Progress, residual: list[str]) -> bool:
+    """Put the rule file back as it was before this call (its prior bytes,
+    or absent), decided by reading back. Returns whether it landed."""
     assert progress.rule_path is not None
     write_exc: Exception | None = None
     try:
@@ -1519,12 +1556,186 @@ def _undo_rule(progress: _Progress, residual: list[str]) -> None:
             _write_rule_runtime(progress.rule_path, rule_bytes=progress.rule_prior)
     except Exception as exc:  # noqa: BLE001 - reported, never raised
         write_exc = exc
-    if not _restore_landed(progress.rule_path, progress.rule_prior):
-        detail = write_exc if write_exc is not None else "the file on disk is not as it was"
+    if _restore_landed(progress.rule_path, progress.rule_prior):
+        return True
+    detail = write_exc if write_exc is not None else "the file on disk is not as it was"
+    residual.append(f"rule file {progress.rule_path} restore failed: {detail}")
+    return False
+
+
+def _restore_settings(progress: _Progress, residual: list[str]) -> bool:
+    """:func:`_undo`'s settings restore, read back; whether it landed."""
+    write_exc: Exception | None = None
+    try:
+        if progress.start_bytes is not None:
+            _write_claude_runtime(settings_path=progress.settings_path, settings_bytes=progress.start_bytes)
+        else:
+            _write_claude_runtime(settings_path=progress.settings_path, unlink_settings=True)
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        write_exc = exc
+    if _restore_landed(progress.settings_path, progress.start_bytes):
+        return True
+    detail = write_exc if write_exc is not None else "the file on disk does not match the expected restored bytes"
+    residual.append(f"settings.json restore failed: {detail}")
+    return False
+
+
+def _undo_windows(progress: _Progress) -> list[str]:
+    """:func:`_undo` on native Windows, ordered so a registration is never
+    left without its rule (M8):
+
+    - after an ACTIVATION, the settings are restored first, and only once
+      they read back as before is the new rule removed and the backup
+      deleted; if the settings restore fails, the rule and the backup stay
+      (the registration this call wrote still runs a working rule, and the
+      backup's path is named);
+    - after a DEACTIVATION, the rule file is put back first, and only once it
+      reads back is the removed registration restored; if the rule cannot be
+      put back, the registration stays removed."""
+    residual: list[str] = []
+    if progress.rule_removed:
+        rule_back = _restore_rule(progress, residual)
+        if progress.settings_written:
+            if rule_back:
+                _restore_settings(progress, residual)
+            else:
+                residual.append(
+                    "settings.json left without the registration this call "
+                    "removed: its rule file could not be put back, and a "
+                    "registration without its rule would fail every call it matches"
+                )
+        return residual
+    settings_back = True
+    if progress.settings_written:
+        settings_back = _restore_settings(progress, residual)
+    if not settings_back:
+        kept = [f"the rule file {progress.rule_path}"]
+        if progress.backup_written and progress.backup_path is not None:
+            kept.append(f"the settings backup {progress.backup_path}")
         residual.append(
-            f"rule file {progress.rule_path} restore failed: {detail} — the rule "
-            "this call wrote or removed may still be as this call left it"
+            "kept " + " and ".join(kept) + ": the registration this call "
+            "wrote may still be live, and it must keep a rule to run"
         )
+        return residual
+    if progress.rule_written:
+        _restore_rule(progress, residual)
+    if progress.backup_written and progress.backup_path is not None:
+        try:
+            _write_claude_runtime(remove_backup=progress.backup_path)
+        except Exception as exc:  # noqa: BLE001
+            residual.append(
+                f"backup {progress.backup_path} removal failed: {exc} — "
+                "a stray backup file may remain"
+            )
+    return residual
+
+
+def record_registration(
+    record: Record, meta: dict, script_name: str, claude_dir: Path, data: dict,
+    *, artifact: dict | None = None,
+) -> tuple[str, str]:
+    """One record's registration state on this machine, read-only (M4):
+    ``(state, detail)`` with state one of
+
+    - ``registered``: the rule file is this guard's current rule, byte for
+      byte as self-learn writes it, a regular file, replays clean, and
+      settings.json holds exactly self-learn's entry for it (event, matcher,
+      program, every argument, timeout, failure policy) and nothing else
+      refers to it;
+    - ``placed``: the rule file is placed and current, nothing refers to it;
+    - ``absent``: neither the rule file nor any reference;
+    - ``broken``: anything else: a reference self-learn did not write, an
+      entry whose rule is missing, a link, a stale or hand-edited rule, a
+      program that is missing, or a failed replay.
+
+    *data* is settings.json as read by :func:`_read_settings_style`."""
+    from . import hook_rules
+    from .hook_compiler import hook_event, hook_mode
+
+    rule_path = claude_dir / "hooks" / rule_file_name(script_name)
+    mentions = _mentions(data, rule_path)
+    if artifact is None:
+        artifact, _note = rule_for_record(record, meta, script_name, meta.get("examples"))
+    entry = rule_hook_entry(hook_program(), rule_path, hook_mode(meta), record.id)
+    event, matcher = hook_event(meta), "|".join(meta.get("tools") or [])
+    foreign = [m for m in mentions
+               if not (m[0] == event and m[1].get("matcher") == matcher and m[2] == entry)]
+    if foreign:
+        return "broken", (f"settings.json refers to {rule_path} in a form self-learn did "
+                          f"not write ({_describe(foreign[0], event, matcher, entry)})")
+    if fsops.is_link(rule_path):
+        return "broken", f"{rule_path} is a link, not self-learn's rule file"
+    if not rule_path.exists():
+        if mentions:
+            return "broken", f"settings.json runs {rule_path}, which is missing"
+        return "absent", "not activated on this machine"
+    try:
+        placed = rule_path.read_bytes()
+        loaded = hook_rules.load_rule(placed)
+    except (OSError, hook_rules.RuleError) as exc:
+        return "broken", (f"rule file {rule_path} does not load ({exc}) — a hand edit; "
+                          f"remove it, then `self-learn hook activate {record.id}`")
+    if hook_rules.dumps_rule(loaded.data) != placed:
+        return "broken", (f"rule file {rule_path} is not laid out as self-learn writes it "
+                          f"(a hand edit) — remove it, then `self-learn hook activate {record.id}`")
+    keep = lambda art: {k: v for k, v in art.items() if k not in ("examples", "digest")}  # noqa: E731
+    if keep(loaded.data) != keep(artifact):
+        return "broken", (f"rule file {rule_path} is not this guard's current rule — run "
+                          f"`self-learn hook activate {record.id}`, which replaces it")
+    mismatches = hook_rules.check_examples(loaded)
+    if mismatches:
+        return "broken", f"rule file {rule_path} failed its replay — " + "; ".join(mismatches)
+    if not mentions:
+        return "placed", f"{rule_path} placed but not registered"
+    if not Path(entry["command"]).is_file():
+        return "broken", f"settings.json runs {entry['command']}, which is missing — reinstall self-learn (`uv sync`)"
+    return "registered", f"{rule_path} registered under {event} (matcher {matcher!r})"
+
+
+def refresh_rule_file(home: Path, record: Record, claude_dir: Path) -> str | None:
+    """After a warning hook was regenerated on Windows (S-133, fix round 1
+    M3): an activated guard runs its RULE FILE, not the host script, so the
+    rule file is what must follow. When this record's rule file is placed
+    and self-learn's (``ours``), it is rewritten from the record's current
+    approved block and verified (read back, replayed through the
+    evaluator). A record not activated here stays unactivated. Returns a
+    warning when the rule could not be refreshed, naming the reactivation
+    owed, else ``None``. Callers hold the ledger lock."""
+    from . import hook_rules
+    from . import verbs
+
+    meta = (record.routing or {}).get("hook") or {}
+    try:
+        location = verbs._hook_script_location(home, record, [])  # noqa: SLF001
+    except verbs.VerbError as exc:
+        return f"{record.id}: its rule file could not be located ({exc})"
+    if location is None:
+        return None
+    name = location[1].name
+    rule_path = claude_dir / "hooks" / rule_file_name(name)
+    try:
+        artifact, _note = rule_for_record(record, meta, name, meta.get("examples"))
+    except RuleUnavailable as exc:
+        return (f"{record.id}: its rule file was not refreshed — {exc.reason}; "
+                "the old rule still runs until `self-learn hook deactivate` or a re-route")
+    want = hook_rules.dumps_rule(artifact)
+    state, prior = _classify_rule(rule_path, want, record.id)
+    if state in ("absent", "matches"):
+        return None
+    if state == "conflict":
+        return (f"{record.id}: its rule file {rule_path} is not self-learn's — not refreshed; "
+                f"remove it, then `self-learn hook activate {record.id}`")
+    try:
+        _write_rule_runtime(rule_path, rule_bytes=want)
+        placed = hook_rules.load_rule(rule_path.read_bytes())
+        problems = hook_rules.check_examples(placed)
+    except (OSError, hook_rules.RuleError) as exc:
+        problems = [str(exc)]
+    if rule_path.exists() and rule_path.read_bytes() == want and not problems:
+        return None
+    return (f"{record.id}: its rule file {rule_path} could not be refreshed "
+            f"({'; '.join(problems) or 'it did not read back'}) — run "
+            f"`self-learn hook activate {record.id}`")
 
 
 def _activate_rule(
@@ -1553,7 +1764,7 @@ def _activate_rule(
         current_script = script_abs.read_text(encoding="utf-8")
     except OSError as exc:
         raise HookActivationError(f"cannot read {script_abs}: {exc}") from exc
-    if current_script != meta.get("script"):
+    if not _script_bytes_match(script_abs, meta.get("script")):
         raise HookActivationError(
             f"hook script {script_abs} no longer matches its approved "
             "bytes (drifted since routing) — never hand-edit a "
@@ -1579,7 +1790,7 @@ def _activate_rule(
     mode = hook_mode(meta)
     event = hook_event(meta)
     matcher = "|".join(tools)
-    entry = rule_hook_entry(program, rule_path, mode)
+    entry = rule_hook_entry(program, rule_path, mode, record_id)
     item = {"matcher": matcher, "hooks": [entry]}
     entry_json = json.dumps(item, sort_keys=True)
     script_sha256 = hashlib.sha256(current_script.encode("utf-8")).hexdigest()
@@ -1603,9 +1814,8 @@ def _activate_rule(
             raise HookActivationError(
                 f"{rule_path} is already registered in settings.json in a form "
                 f"self-learn did not write ({desc}) — refusing to change a "
-                "registration this call does not own (`self-learn hook "
-                "deactivate` removes one self-learn wrote from another install; "
-                "otherwise fix settings.json by hand)"
+                "registration this call does not own (fix settings.json by hand: "
+                "remove that entry, then activate again)"
             )
         if mentions:
             entry_json = json.dumps(mentions[0][1], sort_keys=True)
@@ -1710,7 +1920,14 @@ def _activate_rule(
                 )
             )
 
-        # (4) doctor verdict
+        # (4) doctor verdict: this record's own registration, exactly, and
+        # the hooks row as a whole (M4).
+        _raw, after, problem, _bom, _crlf = _read_settings_style(settings_path)
+        if problem is not None:
+            raise HookActivationError(f"registration did not verify as live: {problem}")
+        own, own_detail = record_registration(record, meta, name, claude_dir, after, artifact=artifact)
+        if own != "registered":
+            raise HookActivationError(f"registration did not verify as live: {own_detail}")
         verdict, message = selfcheck._check_hooks(home, claude_dir)  # noqa: SLF001
         if verdict is not selfcheck.Verdict.PASS:
             raise HookActivationError(f"registration did not verify as live: {message}")
@@ -1734,8 +1951,8 @@ def _activate_rule(
             StepReceipt(
                 step_label,
                 f"{replay_note}; the doctor confirms the approved bytes at the "
-                "host path, the rule file and the program the entry runs; "
-                + reload_caveat,
+                "host path, the rule file, the exact entry and the program it "
+                "runs; " + reload_caveat,
             )
         )
         return ActivationResult(
@@ -1760,10 +1977,13 @@ def _deactivate_rule(
     record: Record, meta: dict, tools: list[str], script_abs: Path, claude_dir: Path
 ) -> ActivationResult:
     """:func:`deactivate` on native Windows: remove only this rule's own
-    exec-form entries, THEN the rule file (the Linux order). Unlike Linux,
-    an unparseable settings.json refuses the whole call: with
-    ``onFailure: block`` a deny entry left naming a removed rule file would
-    block every call it matches."""
+    exec-form entries, THEN the rule file (the Linux order). Refused, with
+    nothing changed, when settings.json is unparseable or misshapen (a deny
+    entry left naming a removed rule file would block every call it
+    matches), when any handler refers to the rule file in a form self-learn
+    did not write (M7: removing the rule would leave that handler failing,
+    and removing the handler is not provably self-learn's to do), and when
+    the rule file is not self-learn's (m5)."""
     from .hook_compiler import hook_mode
 
     record_id = record.id
@@ -1774,7 +1994,7 @@ def _deactivate_rule(
     mode = hook_mode(meta)
     event = hook_event(meta)
     matcher = "|".join(tools)
-    entry = rule_hook_entry(hook_program(), rule_path, mode)
+    entry = rule_hook_entry(hook_program(), rule_path, mode, record_id)
 
     # ------------------------------------------------- Phase 1: prepare
     state, prior = _classify_rule(rule_path, None, record_id)
@@ -1787,15 +2007,21 @@ def _deactivate_rule(
     mentions = _mentions(data, rule_path)
     foreign = [
         m for m in mentions
-        if not (m[0] == event and m[1].get("matcher") == matcher
-                and _kind(m[2], entry) in ("exact", "moved"))
+        if not (m[0] == event and m[1].get("matcher") == matcher and _kind(m[2], entry) == "exact")
     ]
     if foreign:
         desc = _describe(foreign[0], event, matcher, entry)
         raise HookActivationError(
-            f"{rule_path} is registered in settings.json in a form self-learn did "
+            f"{rule_path} is referred to in settings.json in a form self-learn did "
             f"not write ({desc}) — refusing to remove a registration this call "
-            "does not own (fix settings.json by hand)"
+            "cannot prove is its own, or the rule it still runs; nothing was "
+            "changed (fix settings.json by hand)"
+        )
+    if state == "conflict":
+        raise HookActivationError(
+            f"{rule_path} is not a rule self-learn wrote for {record_id} (a hand edit "
+            "or another record's file) — nothing was changed; remove or restore it by "
+            "hand, then deactivate again"
         )
     settings_changed = False
     new_settings_bytes: bytes | None = None
@@ -1826,21 +2052,13 @@ def _deactivate_rule(
             steps.append(StepReceipt("unregistered", f"{rule_path} already absent (idempotent)"))
             backup_note = "no settings.json change (already absent)"
 
-        if state in ("ours", "matches"):
+        if state == "ours":
             progress.rule_prior = prior
             progress.rule_removed = True
             _write_rule_runtime(rule_path, unlink=True)
             steps.append(StepReceipt("unplaced", f"removed {rule_path}"))
-        elif state == "absent":
-            steps.append(StepReceipt("unplaced", f"{rule_path} already absent (idempotent)"))
         else:
-            steps.append(
-                StepReceipt(
-                    "unplaced",
-                    f"{rule_path} is not a rule self-learn wrote for {record_id} — "
-                    "left in place (not this record's rule file)",
-                )
-            )
+            steps.append(StepReceipt("unplaced", f"{rule_path} already absent (idempotent)"))
         return ActivationResult(
             steps=tuple(steps), backup_path=None, backup_note=backup_note, progress=progress
         )

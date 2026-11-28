@@ -42,6 +42,7 @@ from changed inputs; 08 §8.1 hook-apply pin).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 from pathlib import Path
@@ -69,6 +70,8 @@ __all__ = [
     "generate_script",
     "previous_emitter_script",
     "replay_examples",
+    "replay_examples_native",
+    "locale_problem",
     "SCRIPT_LOCALE",
     "script_for_hook",
     "script_name",
@@ -418,11 +421,43 @@ def _locale_pin(record_id: str, mode: str) -> str:
         verdict="fail closed",
         fail=(
             "{\n"
-            f'    echo "self-learn {record_id}: guard regex failed — failing closed" >&2\n'
+            f'    echo "self-learn {record_id}: {LOCALE_FAILURE} — failing closed" >&2\n'
             "    exit 2\n"
             "}"
         ),
     )
+
+
+#: What a pinned guard says when its locale probe fails (fix round 1, m2):
+#: the prerequisite by name, never the generic "guard regex failed".
+LOCALE_FAILURE = (
+    "this host's grep cannot match under " + SCRIPT_LOCALE
+    + " (the locale is missing, or grep is not multibyte-aware)"
+)
+
+#: The pin's own export line: a script that carries it needs the probe to pass.
+LOCALE_PIN_LINE = "export LC_ALL=" + SCRIPT_LOCALE + " 2>/dev/null\n"
+
+
+def locale_problem() -> str | None:
+    """Run the pinned scripts' own probe here (Linux; fix round 1, m1/m2):
+    ``None`` when ``grep`` under ``LC_ALL=C.UTF-8`` reads ``é`` as one
+    character, else why not. Every pinned guard on a host that fails it
+    takes its fallback branch on every call (a deny guard blocks, a warning
+    is silent)."""
+    env = dict(os.environ, LC_ALL=SCRIPT_LOCALE)
+    try:
+        proc = procs.run_bounded(
+            ["grep", "-c", "^.$"], input="é\n".encode("utf-8"), env=env,
+            timeout=VALIDATE_ERE_TIMEOUT_S, binary=True,
+        )
+    except procs.BoundedTimeout:
+        return f"grep did not finish within {VALIDATE_ERE_TIMEOUT_S:g}s"
+    except OSError as exc:
+        return f"grep cannot run ({exc})"
+    if proc.stdout.strip() != b"1":
+        return LOCALE_FAILURE
+    return None
 
 
 def previous_emitter_script(script: str, record_id: str, mode: str) -> str | None:
@@ -583,12 +618,32 @@ def validate_ere(pattern: str) -> str | None:
     on a pathological pattern — M-G's ``VALIDATE_ERE_TIMEOUT_S`` bound —
     is reported the same way, as a rejected pattern, rather than
     propagating a bounded-child exception through a validator whose whole
-    contract is "return the problem, or None.")"""
+    contract is "return the problem, or None.")
+
+    Fix round 1 (m1): grep runs in the locale every generated guard pins
+    (:data:`SCRIPT_LOCALE`, decision 180), never the caller's, so a range
+    such as ``[a-Z]`` is judged as the guard will read it; a host whose
+    grep cannot match under that locale is named as such, never reported
+    as a bad pattern. On native Windows no program is spawned: the
+    pattern is compiled by the rule evaluator, the engine that runs it
+    there (M3)."""
+    if os.name == "nt":
+        from . import hook_rules
+
+        try:
+            hook_rules.compile_pattern(pattern)
+        except hook_rules.RuleError as exc:
+            return " ".join(str(exc).split())
+        return None
+    unusable = locale_problem()
+    if unusable is not None:
+        return f"cannot check the pattern: {unusable}, and every guard needs it"
     try:
         proc = procs.run_bounded(
             ["grep", "-qE", "--", pattern],
             input="",
             timeout=VALIDATE_ERE_TIMEOUT_S,
+            env=dict(os.environ, LC_ALL=SCRIPT_LOCALE),
         )
     except procs.BoundedTimeout:
         return f"grep -E did not finish within {VALIDATE_ERE_TIMEOUT_S:g}s — pattern rejected"
@@ -934,7 +989,14 @@ def replay_examples(
     S-73: *hook* is the block (or routing.hook) the script came from; a
     ``mode: warn`` block replays through :func:`_replay_warn`. ``None``,
     or a block that records no mode, replays as deny, unchanged. A warn
-    replay needs *record_id*: the expected text carries the lesson's id."""
+    replay needs *record_id*: the expected text carries the lesson's id.
+
+    On native Windows (fix round 1, M3) no program is spawned: the script's
+    examples are decided by the rule evaluator (:func:`replay_examples_native`)."""
+    if os.name == "nt":
+        return replay_examples_native(
+            script_path.read_text(encoding="utf-8"), examples, hook, record_id
+        )
     if hook is not None and hook_mode(hook) == "warn":
         if record_id is None:
             raise HookCompileError("a warning hook's replay needs its record id")
@@ -1026,11 +1088,58 @@ def _replay_warn(
     return mismatches
 
 
+_HEADER_NAME_RE = re.compile(r"# (self-learn-[0-9a-f]{8}-([a-z0-9-]{1,32})\.sh) — ")
+
+
+def replay_examples_native(
+    script: str, examples: dict, hook: dict | None, record_id: str | None
+) -> list[str]:
+    """:func:`replay_examples` with no program spawned (native Windows, fix
+    round 1, M3): the script must be exactly what this compiler makes from
+    *hook* (its header names the file, whose slug is the only part of the
+    Trigger a script carries), the rule built from the same block must be
+    one the evaluator can decide exactly, and each example is decided by
+    the evaluator. One sentence per mismatch, as the Bash replay gives."""
+    from . import hook_rules
+
+    if hook is None or record_id is None:
+        raise HookCompileError("a native replay needs the hook block and its record id")
+    lines = script.splitlines()
+    found = _HEADER_NAME_RE.match(lines[1]) if len(lines) > 1 else None
+    if found is None:
+        return ["the script's header names no self-learn hook file, so the rule "
+                "evaluator cannot replay it"]
+    trigger = found.group(2).replace("-", " ")
+    try:
+        current = script_for_hook(record_id, trigger, hook)
+        artifact = rule_artifact_for_hook(record_id, trigger, hook, {})
+    except (HookCompileError, hook_rules.RuleError) as exc:
+        return ["the rule evaluator cannot decide this guard exactly: "
+                + " ".join(str(exc).split())]
+    if artifact["script_name"] != found.group(1) or current != script:
+        return ["the script is not what self-learn generates from its hook block, "
+                "so the rule evaluator cannot replay it"]
+    rule = hook_rules.load_rule(artifact)
+    verdicts = ("allow", "warn") if hook_mode(hook) == "warn" else ("allow", "deny")
+    mismatches: list[str] = []
+    for verdict in verdicts:
+        for i, example in enumerate(examples.get(verdict, [])):
+            got = hook_rules.evaluate(rule, json.dumps(example).encode("utf-8"))
+            if got.verdict != verdict:
+                mismatches.append(
+                    f"{verdict}[{i}] expected {verdict} but the rule evaluator "
+                    f"decided {got.verdict} ({got.reason}): {json.dumps(example)}"
+                )
+    return mismatches
+
+
 # ---------------------------------------------------------------------------
 # Rule artifacts (native Windows, lane 5R). New emitters BESIDE the Bash
 # emitter above, which they call and never change: the artifact names the
 # script's digest, the exact line the script prints on a match, and the
-# line numbers its ERR trap reports. Nothing in the product calls these yet.
+# line numbers its ERR trap reports. Native Windows activation, its doctor
+# row and warning-hook regeneration build rules through them (lane
+# w5-activation); Linux runs the Bash script and never reads a rule.
 
 
 def rule_artifact_name(record_id: str, trigger: str) -> str:

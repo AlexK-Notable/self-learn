@@ -792,7 +792,10 @@ def test_r1_minor3_a_placement_after_a_lost_pending_entry_is_reported(
     """The remaining race (S-133 row): a STOP at the pending-cache write
     refuses it after the regeneration commit, so the entry is lost. Once the
     STOP is cleared, a recompile by hand puts the stored bytes in place and
-    SAYS so (`hooks_reapplied`, and the CLI line)."""
+    SAYS so. Since fix round 1 of lane w5-activation (M1) the ledger's own
+    history shows the file still holds the bytes the regeneration replaced,
+    so it is placed as an interrupted placement (`hooks_placed`, and the
+    CLI line), not merely re-applied."""
     from self_learn import cli, intents
 
     script = _route(env, monkeypatch, BASH_WARN, BASH_EXAMPLES, old=True)
@@ -826,6 +829,6 @@ def test_r1_minor3_a_placement_after_a_lost_pending_entry_is_reported(
     out = capsys.readouterr().out
     assert rc == 0 and len(results) == 1
     assert script.read_text(encoding="utf-8") == new
-    assert results[0].hooks_reapplied == [RID]
-    assert results[0].hooks_regenerated == [] and results[0].hooks_placed == []
-    assert f"re-applied the stored bytes of hook(s) whose placed file differed: {RID}" in out
+    assert results[0].hooks_placed == [RID]
+    assert results[0].hooks_regenerated == [] and results[0].hooks_reapplied == []
+    assert f"placed warning hook(s) an earlier failed write left pending: {RID}" in out

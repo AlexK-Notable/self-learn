@@ -1727,8 +1727,9 @@ def check_examples(rule: Rule) -> list[str]:
 _KEYS = ("version", "kind", "record_id", "script_name", "script_sha256", "mode", "event",
          "tools", "fields", "match", "message", "output", "error_lines", "examples", "digest")
 _MATCH_KEYS = ("dialect", "pattern", "view", "locale", "ctype", "tables")
-#: The evaluator's fixed locale: the generated script inherits the caller's,
-#: and only under C.UTF-8 are the two the same (see the report on lane 5R).
+#: The evaluator's fixed locale. Since decision 180 the generated script
+#: pins the same one (``export LC_ALL=C.UTF-8``, and refuses a host that
+#: lacks it), so the two decide alike (see the report on lane 5R).
 LOCALE = "C.UTF-8"
 _SCRIPT_NAME_RE = re.compile(r"self-learn-([0-9a-f]{8})-[a-z0-9-]{1,32}\.sh")
 

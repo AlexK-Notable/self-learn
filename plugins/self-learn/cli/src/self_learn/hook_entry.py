@@ -263,86 +263,153 @@ def _find_self_learn() -> str | None:
     return None
 
 
-def _write_err(text: str) -> None:
-    if text and sys.stderr is not None:
-        # Bound to ``out`` for the lock invariant's walker (see ``_write``).
-        out = getattr(sys.stderr, "buffer", None)
-        if out is not None:
-            out.write(text.encode("utf-8"))
-            sys.stderr.flush()
-        else:
-            sys.stderr.write(text)
+#: The evaluate path's bounds (fix round 1, m3). Claude Code's hook input
+#: carries a Write's whole file, so the input limit is generous; a rule file
+#: is a few kilobytes. Reading stdin must finish within ``_READ_S``, and
+#: everything, reading included, within ``_TOTAL_S`` (the entry's timeout
+#: is 5 s). Past any bound the REGISTERED policy applies.
+_MAX_INPUT = 64 * 1024 * 1024
+_MAX_RULE = 1024 * 1024
+_READ_S = 2.0
+_TOTAL_S = 4.0
 
 
-def _declared(raw: bytes | None) -> tuple[str | None, str | None]:
-    """The mode and record id a rule file says it has, read without
-    trusting it (its digest may not match). ``(None, None)`` when the
-    bytes are not a JSON object."""
+def _silence(stream) -> None:
+    """Point a stream whose write failed (a closed or broken pipe) at the
+    null device, so neither a retry nor the interpreter's flush at exit
+    fails again and changes the exit status."""
     try:
-        data = json.loads(raw) if raw is not None else None
-    except (ValueError, UnicodeDecodeError, RecursionError):
-        return None, None
-    if not isinstance(data, dict):
-        return None, None
-    mode = data.get("mode") if data.get("mode") in ("deny", "warn") else None
-    rid = data.get("record_id")
-    rid = rid if isinstance(rid, str) and re.fullmatch(r"lrn-[0-9a-f]{8}", rid) else None
-    return mode, rid
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, stream.fileno())
+        os.close(devnull)
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
-def _unusable(raw: bytes | None, rule: str, why: str) -> int:
-    """A rule that cannot be loaded or evaluated: a deny rule (or one whose
-    mode cannot be read) blocks the call with a line saying so; a rule that
-    declares itself a warning stays silent, as its script would."""
-    mode, rid = _declared(raw)
+def _emit(stream, data: bytes) -> None:
+    """Best-effort output for the evaluate path: the decision's exit status
+    never depends on whether its output could be written (M6)."""
+    if not data or stream is None:
+        return
+    try:
+        out = stream.buffer
+        out.write(data)
+        out.flush()
+    except (OSError, ValueError, AttributeError):
+        _silence(stream)
+
+
+def _refuse(mode: str, rid: str | None, why: str) -> int:
+    """The registered policy for a rule that cannot decide this call: a
+    deny registration blocks with a line saying why; a warn registration
+    stays silent, as its script would. The mode is the REGISTRATION's,
+    never the rule file's (M5)."""
     if mode == "warn":
         return 0
     who = f"self-learn {rid}" if rid else "self-learn"
-    _write_err(f"{who}: guard rule {rule} cannot be used ({why}) — failing closed\n")
+    _emit(sys.stderr, f"{who}: {why} — failing closed\n".encode("utf-8"))
     return 2
 
 
+def _read_input(deadline: float) -> bytes | None:
+    """stdin, read in a helper thread so a caller that holds the pipe open
+    cannot keep the hook waiting: ``None`` when it did not reach EOF by
+    *deadline* or exceeded :data:`_MAX_INPUT`."""
+    import threading
+    import time
+
+    box: dict[str, bytes | None] = {}
+
+    def read() -> None:
+        try:
+            box["data"] = sys.stdin.buffer.read(_MAX_INPUT + 1) if sys.stdin is not None else b""
+        except (OSError, ValueError):
+            box["data"] = b""  # unreadable input is empty input: a deny rule fails closed
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(max(0.0, deadline - time.monotonic()))
+    data = box.get("data")
+    if data is None or len(data) > _MAX_INPUT:
+        return None
+    return data
+
+
+def _is_link(path: str) -> bool:
+    if os.name == "nt":
+        from pathlib import Path
+
+        from .primitives import fsops
+
+        return fsops.is_link(Path(path))
+    return os.path.islink(path)
+
+
 def _evaluate(argv: list[str]) -> int:
-    """``self-learn-hook evaluate --rule <file>``: decide one tool call (the
-    hook input on stdin) the way the rule's generated script would, through
-    :mod:`hook_rules`. Deny: exit 2, the message on stderr. Warn: the
-    structured line on stdout, exit 0. Allow: silence, exit 0. Never imports
-    the ledger or the SDK: it runs on every matching tool call."""
+    """``self-learn-hook evaluate --rule <file> --mode deny|warn --record <id>``:
+    decide one tool call (the hook input on stdin) the way the rule's
+    generated script would, through :mod:`hook_rules`. Deny: exit 2, the
+    message on stderr. Warn: the structured line on stdout, exit 0. Allow:
+    silence, exit 0.
+
+    The registration carries the expected mode and record (fix round 1,
+    M5): a rule file that is missing, a link, too large, damaged (its digest
+    fails) or another record's or mode's applies the REGISTERED policy, so a
+    damaged file cannot choose its own mode. A registration without
+    ``--mode`` is treated as deny. Never imports the ledger or the SDK: it
+    runs on every matching tool call."""
+    import time
+
+    started = time.monotonic()
     parser = argparse.ArgumentParser(prog="self-learn-hook evaluate")
     parser.add_argument("--rule", required=True)
-    rule_path = parser.parse_args(argv).rule
-    raw: bytes | None = None
+    parser.add_argument("--mode", choices=("deny", "warn"), default="deny")
+    parser.add_argument("--record", default=None)
+    args = parser.parse_args(argv)
+    mode, rid, rule_path = args.mode, args.record, args.rule
     try:
-        data = b""
-        if sys.stdin is not None:
-            try:
-                data = sys.stdin.buffer.read()
-            except (OSError, ValueError):
-                data = b""  # unreadable input is empty input: a deny rule fails closed
+        data = _read_input(started + _READ_S)
+        if data is None:
+            return _refuse(mode, rid, f"hook input not read within {_READ_S:g}s "
+                                      f"or over {_MAX_INPUT} bytes")
         from . import hook_rules
 
+        if _is_link(rule_path):
+            return _refuse(mode, rid, f"guard rule {rule_path} is a link, not self-learn's file")
         try:
             with open(rule_path, "rb") as fh:
-                raw = fh.read()
+                raw = fh.read(_MAX_RULE + 1)
         except OSError as exc:
-            return _unusable(None, rule_path, f"cannot read it: {exc.strerror or exc}")
+            return _refuse(mode, rid, f"guard rule {rule_path} cannot be read: {exc.strerror or exc}")
+        if len(raw) > _MAX_RULE:
+            return _refuse(mode, rid, f"guard rule {rule_path} is over {_MAX_RULE} bytes")
         try:
             rule = hook_rules.load_rule(raw)
         except hook_rules.RuleError as exc:
-            return _unusable(raw, rule_path, str(exc))
-        decision = hook_rules.evaluate(rule, data)
-        _write(decision.stdout)
-        _write_err(decision.stderr)
-        if sys.stdout is not None:
-            sys.stdout.flush()
-        return decision.exit_code
+            return _refuse(mode, rid, f"guard rule {rule_path} cannot be used ({exc})")
+        if rule.mode != mode or (rid is not None and rule.record_id != rid):
+            return _refuse(mode, rid, f"guard rule {rule_path} is {rule.record_id}'s {rule.mode} "
+                                      f"rule, not the registered {rid or '?'} {mode} rule")
+        remaining = _TOTAL_S - (time.monotonic() - started)
+        decision = hook_rules.evaluate(
+            rule, data, deadline_s=max(0.0, min(hook_rules.MATCH_DEADLINE_S, remaining))
+        )
+        code = decision.exit_code
+        _emit(sys.stdout, decision.stdout)
+        _emit(sys.stderr, decision.stderr.encode("utf-8"))
+        return code
     except Exception as exc:  # noqa: BLE001 - a guard decides every call, never a traceback
-        return _unusable(raw, rule_path, f"evaluator error: {type(exc).__name__}")
+        return _refuse(mode, rid, f"guard rule {rule_path}: evaluator error {type(exc).__name__}")
 
 
 def main() -> int:
     if sys.argv[1:2] == ["evaluate"]:
-        return _evaluate(sys.argv[2:])
+        code = _evaluate(sys.argv[2:])
+        # No interpreter shutdown: the stdin reader thread may still be
+        # blocked on a caller that holds the pipe open (m3), which aborts
+        # finalization, and no stream is flushed a second time (M6). Every
+        # byte the decision writes was already flushed by ``_emit``.
+        os._exit(code)
     parser = argparse.ArgumentParser(prog="self-learn-hook")
     parser.add_argument("event", choices=("session-start", "read-observed"))
     session_start = parser.parse_args().event == "session-start"
