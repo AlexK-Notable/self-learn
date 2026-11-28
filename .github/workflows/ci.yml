@@ -153,6 +153,24 @@ jobs:
           $delta = Compare-Object $expected @($ran | ForEach-Object { ($_.classname.Split('.')[-1]) + '::' + $_.name })
           if ($delta -or $unexpected.Count) { throw "Windows process test selection changed: $($delta | Out-String)$unexpected" }
 
+      - name: Windows hook rule evaluator
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "hook-rules.xml"
+          uv run --no-sync python -m pytest tests/test_hook_rules.py -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") })
+          $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+          $allowed = @(
+            "Linux differential: compares against the generated Bash script"
+            "Linux only: reads the Linux test modules the fixtures come from"
+          )
+          $unexpected = @($skips | Where-Object { $allowed -cnotcontains $_.skipped.message })
+          if ($ran.Count -ne 177 -or $skips.Count -ne 136 -or $unexpected.Count -ne 0) {
+            throw "Expected 177 executed hook-rule tests and 136 Linux-only skips. Executed $($ran.Count), skipped $($skips.Count), unexpected $($unexpected.Count)."
+          }
+
       - name: Verify LF line endings on armor-pinned fixtures
         run: |
           $files = @(

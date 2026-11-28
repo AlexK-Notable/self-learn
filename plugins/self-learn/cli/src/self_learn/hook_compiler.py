@@ -969,3 +969,70 @@ def _replay_warn(
                     f"message but the hook printed {out[:200]!r}: {json.dumps(example)}"
                 )
     return mismatches
+
+
+# ---------------------------------------------------------------------------
+# Rule artifacts (native Windows, lane 5R). New emitters BESIDE the Bash
+# emitter above, which they call and never change: the artifact names the
+# script's digest, the exact line the script prints on a match, and the
+# line numbers its ERR trap reports. Nothing in the product calls these yet.
+
+
+def rule_artifact_name(record_id: str, trigger: str) -> str:
+    """The artifact's file name: the script's name with ``.rule.json``."""
+    return script_name(record_id, trigger).removesuffix(".sh") + ".rule.json"
+
+
+def rule_artifact(
+    record_id: str,
+    trigger: str,
+    tools: list[str],
+    path_regex: str,
+    deny_message: str,
+    *,
+    mode: str = "deny",
+    event: str = "PreToolUse",
+    examples: dict | None = None,
+) -> dict:
+    """The versioned JSON rule artifact for the script :func:`generate_script`
+    makes from the same inputs (:mod:`hook_rules`). Raises
+    :class:`HookCompileError` where the script would be refused, and
+    ``hook_rules.RuleError`` where the evaluator cannot decide exactly what
+    the script decides (a pattern grep reads in an unspecified or
+    locale-bound way, or an example the evaluator decides differently)."""
+    from . import hook_rules
+
+    script = generate_script(record_id, trigger, tools, path_regex, deny_message,
+                             mode=mode, event=event)
+    if mode == "warn":
+        output = warn_output(event, record_id, deny_message)
+    else:
+        output = prefixed_message(record_id, deny_message)
+    return hook_rules.build_rule(
+        record_id=record_id,
+        tools=list(tools),
+        path_regex=path_regex,
+        message=deny_message,
+        mode=mode,
+        event=event,
+        script=script,
+        script_name=script_name(record_id, trigger),
+        output=output,
+        examples=examples,
+    )
+
+
+def rule_artifact_for_hook(record_id: str, trigger: str, hook: dict,
+                           examples: dict | None = None) -> dict:
+    """:func:`rule_artifact` for a hook block, read the way
+    :func:`script_for_hook` reads it."""
+    return rule_artifact(
+        record_id,
+        trigger,
+        list(hook.get("tools") or []),
+        str(hook.get("path_regex") or ""),
+        hook_message(hook),
+        mode=hook_mode(hook),
+        event=hook_event(hook),
+        examples=examples,
+    )
