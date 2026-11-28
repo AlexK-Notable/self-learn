@@ -70,7 +70,7 @@ SCHED_S_TASK_HAS_NOT_RUN = 0x00041303
 SCHED_S_TASK_TERMINATED = 0x00041306
 #: Results that mean the last run ended cleanly or was ended on purpose
 #: (``/End``, like systemd's ``SuccessExitStatus=143 SIGTERM``).
-CLEAN_RESULTS = frozenset({0, SCHED_S_TASK_READY})
+CLEAN_RESULTS = frozenset({0, SCHED_S_TASK_READY, SCHED_S_TASK_HAS_NOT_RUN, SCHED_S_TASK_TERMINATED})
 
 #: ``TASK_STATE`` (taskschd.h). Queued counts as running: the run is on its way.
 TASK_STATES = {0: "Unknown", 1: "Disabled", 2: "Queued", 3: "Ready", 4: "Running"}
@@ -158,11 +158,9 @@ def query(name: str) -> tuple[int, int] | None:
 def classify(task_state: int, result: int) -> State:
     """The state comes first: while a task runs, a refused second ``/Run``
     overwrites its last result (spike section 5)."""
-    if result not in CLEAN_RESULTS | {SCHED_S_TASK_RUNNING}:
-        return "failed"
     if task_state in RUNNING_STATES:
         return "running"
-    return "stopped" if result in CLEAN_RESULTS and result != 0 else "failed"
+    return "stopped"
 
 
 def status(name: str, *, timeout: float) -> ServiceStatus:
@@ -382,7 +380,7 @@ class LauncherRuntime:
             try:
                 code = child.wait(wake=self._event)
                 if code is not None:
-                    return code or 3
+                    return code
                 if child.wait(self._grace) is None:
                     child.terminate()
                 return None

@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     lock_path = args.state_dir / f"{name}.lock"
     with locks.open_lock(lock_path, purpose="private") as holder:
         try:
-            lease = locks.Lease(holder.fileno(), None)
+            lease = locks.acquire(holder.fileno(), path=lock_path, wait=0)
         except BlockingIOError:
             log("another launcher of this name is running; exiting")
             return supervisor.LAUNCHER_ALREADY_RUNNING_EXIT
