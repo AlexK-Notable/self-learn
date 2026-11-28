@@ -42,9 +42,10 @@ _SRC = Path(__file__).resolve().parent.parent / "src" / "self_learn"
 #: site whose *repo* argument is a HOST checkout, never the ledger, so
 #: the contract (ledger-scoped by definition) does not reach it
 #: (§7.2a.5(1)(c)). A qualified name may own more than one real call
-#: site (``ledger.init_home`` takes it twice — steps 3 and 5 — and
-#: ``verbs.recompile`` twice too); the census names the FUNCTION once,
-#: not each line.
+#: site. Each function appears once. ledger.init_home has two bootstrap
+#: sites (steps 3 and 5). Windows adds two for local Git config only:
+#: repair before recovery compares file bytes, and rollback after a refusal.
+#: Neither config operation should start another recovery pass.
 _CENSUS: dict[tuple[str, str], str] = {
     ("intents", "ledger_write"): "wrapper",
     ("intents", "recover"): "ledger-exempt",

@@ -86,6 +86,12 @@ jobs:
             'test_git_tree_keys_and_literal_pathspec_with_unrelated_index_entry'
             'test_existing_buckets_roundtrip_without_rekey'
             'test_init_repairs_local_config_before_recovery'
+            'test_init_bootstraps_empty_repository[git-init]'
+            'test_init_bootstraps_empty_repository[empty-clone]'
+            'test_init_finds_original_subject_in_clone'
+            'test_init_reports_failed_config_rollback'
+            'test_statement_failure_preserves_committed_receipt[symlink]'
+            'test_statement_failure_preserves_committed_receipt[malformed]'
           )
           foreach ($version in '3.12', '3.13') {
             if ($version -eq '3.13') {

@@ -17,6 +17,7 @@ first mutation and stages+commits inside that same span, mirroring
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -76,6 +77,10 @@ class StatementUsageError(StatementError):
 
 
 def _path(home: Path) -> Path:
+    if os.name == "nt":
+        from .primitives._capture_windows import checked_path
+
+        return checked_path(home, home / "user-statements.jsonl")
     return home / "user-statements.jsonl"
 
 

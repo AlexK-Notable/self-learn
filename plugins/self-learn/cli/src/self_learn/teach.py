@@ -553,7 +553,16 @@ def _run_teach(args: argparse.Namespace) -> int:
     # a non-zero exit (that skips the worker kick, and a person who reads a
     # failure re-runs teach and writes the lesson twice). The statement leg
     # reports its own failure, with the command that retries it.
-    _record_statement(statement, message_ref)
+    if os.name == "nt":
+        try:
+            _record_statement(statement, message_ref)
+        except Exception as exc:
+            # This optional write runs after the capture committed. Report its
+            # failure and let the caller emit the receipt for that commit.
+            print(f"self-learn teach: the lesson was captured, but --statement failed: {exc}\n"
+                  f"{_statement_retry_hint(statement, message_ref)}", file=sys.stderr)
+    else:
+        _record_statement(statement, message_ref)
     return code
 
 
