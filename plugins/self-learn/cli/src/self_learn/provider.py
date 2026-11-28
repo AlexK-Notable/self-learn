@@ -636,17 +636,37 @@ def _windows_batch_path(path: str) -> bool:
     )
 
 
+def _windows_remote(entry: str) -> bool:
+    """Whether a PATH folder is on the network (a UNC share, or a drive
+    letter Windows reports as remote). Asked of the drive type only, which
+    touches no share, so an unavailable server cannot stall the check."""
+    from pathlib import PureWindowsPath
+
+    drive = PureWindowsPath(entry).drive
+    if drive.startswith(("\\\\", "//")):
+        return True
+    try:
+        import ctypes
+
+        return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == 4  # type: ignore[attr-defined]  # DRIVE_REMOTE
+    except Exception:  # noqa: BLE001 - unknown: treated as local
+        return False
+
+
 def _windows_path_dirs() -> list[str]:
-    """The PATH entries a Windows search may use: absolute with a drive (or
-    a UNC share), in order, surrounding quotes removed. A relative entry, or
+    """The PATH entries a Windows search may use: absolute with a drive, on
+    a local drive, in order, surrounding quotes removed. A relative entry, or
     a rooted one with no drive, names a folder that depends on the current
-    folder or drive, so it is skipped."""
+    folder or drive, so it is skipped. A network folder is skipped too: a
+    file check there can stall a session's start on an unavailable server
+    (an installed ``claude.exe`` on a share is then not chosen; the sdk's
+    own copy or an explicit ``sdk.cli_path`` still is)."""
     from pathlib import PureWindowsPath
 
     dirs = []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         entry = entry.strip().strip('"')
-        if entry and PureWindowsPath(entry).is_absolute():
+        if entry and PureWindowsPath(entry).is_absolute() and not _windows_remote(entry):
             dirs.append(entry)
     return dirs
 
@@ -668,12 +688,16 @@ def _installed_cli_path_windows() -> tuple[str | None, str]:
             shim_path = os.path.join(directory, shim)
             if os.path.isfile(shim_path):
                 passed_over.append(f"{shim_path} (a batch shim the sdk refuses)")
-    location = Path.home() / ".local" / "bin" / "claude.exe"
-    if location.is_file():
+    try:
+        location: Path | None = Path.home() / ".local" / "bin" / "claude.exe"
+    except (RuntimeError, KeyError):  # no resolvable home: the sdk's own answer stands
+        location = None
+    if location is not None and location.is_file():
         if not _windows_batch_path(str(location)):
             return str(location), f"installed ({location})"
         passed_over.append(f"{location} (a folder named like a batch file)")
-    why = f"no native claude.exe on PATH or at {location}"
+    where = location if location is not None else "%USERPROFILE%\\.local\\bin (no home folder resolved)"
+    why = f"no native claude.exe on PATH or at {where}"
     if passed_over:
         why += "; passed over " + ", ".join(passed_over)
     return None, why
@@ -870,6 +894,11 @@ def _operative_cli_version(home: Path | str | None = None) -> tuple[str | None, 
     skip_reason = "" if cli_path else choice.sdk_reason
     if not cli_path:
         return None, skip_reason or "sdk cli path not resolved"
+    if os.name == "nt" and _windows_batch_path(cli_path):
+        # S-NEXT-w6-sdk: whichever rule chose it (an explicit setting, the
+        # opt-out, the sdk's own last-resort hit), the sdk refuses to start a
+        # batch script, so the doctor never runs one either.
+        return None, f"resolved cli {cli_path} is a .bat/.cmd batch script, which the sdk refuses to run"
     argv = [cli_path, "--version"]
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=10)

@@ -68,27 +68,50 @@ if os.name == "nt":
     # Registered at import: `lifecycle`'s orphan sweeps (ask, summarise)
     # can run before any session, and importing `lifecycle` imports this
     # module first (`invocation_sdk/__init__.py`).
-    from ..primitives import procs as _windows_procs
-    from ..sdksession import teardown as _windows_teardown
+    import claude_agent_sdk as _windows_sdk
 
-    _windows_teardown.use_containment(
+    from ..primitives import procs as _windows_procs
+    from ..sdksession import _containment_windows as _windows_containment
+
+    _windows_containment.use_containment(
         _windows_procs,
-        _windows_teardown.ContainmentMessages(
+        _windows_containment.ContainmentMessages(
             self_failed=(
                 "run: sdk backend: could not put self-learn in a kill-on-close job ({exc}); "
                 "Claude Code processes may outlive an abrupt exit"
             ),
-            contain_failed=(
+            contain_refused=(
                 "run: sdk backend: could not contain the Claude Code child pid {pid} ({exc}); "
-                "it is ended by the sdk's own teardown only"
+                "the session ends it by the identity read at spawn"
+            ),
+            contain_partial=(
+                "run: sdk backend: containing the Claude Code child pid {pid} was interrupted ({exc}); "
+                "the partly made job is kept and ended with the session"
             ),
             contain_incomplete=(
                 "run: sdk backend: contained the Claude Code child pid {pid}, but not every "
                 "process it had already started ({exc})"
             ),
             terminate_failed="run: sdk backend: ending the contained Claude Code child pid {pid} failed ({exc})",
+            sidecar_failed=(
+                "run: sdk backend: could not write the sidecar for Claude Code child pid {pid} ({exc}); "
+                "a later run will not sweep it"
+            ),
+            sweep_failed="run: sdk backend: orphan sweep for {surface} failed ({exc})",
         ),
     )
+
+    def _windows_session_start(client: Any, spec: SessionSpec) -> None:
+        """Contain only a real SDK client's child. A client a test put in
+        place of `ClaudeSDKClient` (checked against the SDK package's own
+        class, which a test patching this module's name does not change)
+        names a made-up or a test's process, and containing it would put
+        the test process itself in a lifetime job."""
+        if not isinstance(client, _windows_sdk.ClaudeSDKClient):
+            return
+        _windows_containment.contain_self(spec.log)
+        _windows_containment.open_session(client, spec.log)
+
 
 T = TypeVar("T")
 
@@ -892,9 +915,10 @@ async def _run_session(
     child_pid = lifecycle.child_pid_of(client)
     set_child_pid(child_pid)
     if os.name == "nt" and child_pid is not None:
-        # S-NEXT-w6-sdk: contain the child before its sidecar is written, so
-        # the sidecar records the identity read on the contained process.
-        _windows_teardown.contain_session_child(child_pid, spec.log)
+        # S-NEXT-w6-sdk: the spawn watcher has usually contained the child
+        # already, during the handshake; make sure before the sidecar records
+        # the identity read on the contained process.
+        await _windows_containment.child_known(client, child_pid)
     if child_pid is None:
         # gate r1 N-2: routed through the table (byte-identical text)
         # instead of a bare literal -- `CLI_SHUTDOWN_MESSAGES.
@@ -973,11 +997,9 @@ async def _run_session(
 
 async def _drive(spec: SessionSpec) -> SdkOutcome:
     if os.name == "nt":
-        # S-NEXT-w6-sdk: the one place every CLI model-backed command passes
-        # before its first Claude Code child is spawned (the only
-        # `ClaudeSDKClient(...)` in the CLI is below), so the child is born in
-        # this process's kill-on-close job. Tried once per process.
-        _windows_teardown.contain_self(spec.log)
+        # S-NEXT-w6-sdk: a log that cannot fail a session (start-up, the
+        # sweep, teardown and containment lines all go through it).
+        spec = _dataclass_replace(spec, log=_windows_containment.safe_log(spec.log))
     events = EventLog()
     run_id = new_run_id()
     surface = spec.surface
@@ -1017,6 +1039,13 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
         )
 
     client = ClaudeSDKClient(options=options)
+    if os.name == "nt":
+        # S-NEXT-w6-sdk: the one place every CLI model-backed command passes
+        # before its Claude Code child is spawned (the only
+        # `ClaudeSDKClient(...)` in the CLI is above): join the self job
+        # (once per process), and watch for the child so it is contained
+        # during the SDK's handshake.
+        _windows_session_start(client, spec)
     child_pid_holder: list[int | None] = [None]
     session_id_holder: list[str] = []
     model_observations: list[tuple[str, str | None]] = []

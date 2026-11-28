@@ -76,13 +76,18 @@ def write_sidecar(
     trusts one can SIGKILL an unrelated process that inherited the
     number.
 
-    S-NEXT-w6-sdk, Windows only: also records the child's identity (image
-    path and creation time, read when `teardown.contain_session_child`
-    contained it), the only thing a later sweep acts on; see
-    :func:`_sweep_one_windows`."""
+    S-NEXT-w6-sdk, Windows only: also records the child's identity, its
+    owner's (this process's) identity and how its program was chosen
+    (`_containment_windows.record`); a failed write is reported and loses
+    only the sidecar, never the model call."""
     path = sidecar_path(cache_dir, surface, session_key)
     if os.name == "nt":
-        path.write_text(json.dumps(_windows_record(pid, cli)), encoding="utf-8")
+        from . import _containment_windows
+
+        try:
+            path.write_text(json.dumps(_containment_windows.record(pid, cli)), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - the session goes on without a sidecar
+            _containment_windows.sidecar_failed(pid, exc)
         return
     path.write_text(
         json.dumps({"pid": pid, "started_at": time.time(), "cli": cli}),
@@ -102,7 +107,21 @@ def read_sidecar(cache_dir: Path, surface: str, session_key: str | None = None) 
 def clear_sidecar(cache_dir: Path, surface: str, session_key: str | None = None) -> None:
     """`K-4`/`K-5` -- unlinked whether the session succeeded, failed, or
     timed out; also the ONE call site the orphan sweep uses once it is
-    done with a sidecar it read."""
+    done with a sidecar it read.
+
+    S-NEXT-w6-sdk, Windows only: never removes a record a live process other
+    than this one owns, and a failure to remove leaves the file for a later
+    sweep without failing the caller (`_containment_windows.may_clear`)."""
+    if os.name == "nt":
+        from . import _containment_windows
+
+        path = sidecar_path(cache_dir, surface, session_key)
+        if _containment_windows.may_clear(path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return
     sidecar_path(cache_dir, surface, session_key).unlink(missing_ok=True)
 
 
@@ -143,9 +162,12 @@ def _sweep_one(
             log(messages.orphan_no_live_process(surface, pid))
         return
     if os.name == "nt":
-        _sweep_one_windows(
+        from . import _containment_windows
+
+        _containment_windows.sweep_one(
             cache_dir, surface, session_key, record, pid, started_at,
             log=log, pid_alive=pid_alive, process_start=process_start, messages=messages,
+            clear=lambda: clear_sidecar(cache_dir, surface, session_key),
         )
         return
     try:
@@ -203,7 +225,21 @@ def sweep_orphans(
     is nothing to sweep (`O-quiet`).
 
     `process_start` defaults to :func:`default_process_start` (`F-4`);
-    a caller may pass an explicit anchor (`MS5`)."""
+    a caller may pass an explicit anchor (`MS5`).
+
+    S-NEXT-w6-sdk, Windows only: the same sweep, best effort (a failure is
+    reported and never stops the session from starting)."""
+    if os.name == "nt":
+        from . import _containment_windows
+
+        safe = _containment_windows.safe_log(log)
+        _containment_windows.best_effort_sweep(
+            lambda: _sweep_surface_windows(
+                cache_dir, surface, safe, pid_alive=pid_alive, messages=messages, process_start=process_start,
+            ),
+            surface, safe,
+        )
+        return
     anchor = default_process_start() if process_start is None else process_start
     unkeyed = sidecar_path(cache_dir, surface, None)
     if unkeyed.is_file():
@@ -245,7 +281,21 @@ def sweep_orphan(
     corroborating checks as :func:`sweep_orphans`, and leave every other
     sidecar of the surface alone -- a sibling session's that is running,
     or a host job's. Silent when that sidecar does not exist; a sidecar
-    that cannot be parsed is unlinked."""
+    that cannot be parsed is unlinked.
+
+    S-NEXT-w6-sdk, Windows only: best effort, as :func:`sweep_orphans`."""
+    if os.name == "nt":
+        from . import _containment_windows
+
+        safe = _containment_windows.safe_log(log)
+        _containment_windows.best_effort_sweep(
+            lambda: _sweep_keyed_windows(
+                cache_dir, surface, session_key, safe, pid_alive=pid_alive, messages=messages,
+                process_start=process_start,
+            ),
+            surface, safe,
+        )
+        return
     anchor = default_process_start() if process_start is None else process_start
     path = sidecar_path(cache_dir, surface, session_key)
     if not path.is_file():
@@ -264,129 +314,62 @@ def sweep_orphan(
     )
 
 
-# --------------------------------------------------------------------------
-# S-NEXT-w6-sdk: the Windows sidecar record and orphan sweep. Reached only
-# under `os.name == "nt"`; the process calls come from the client through
-# `teardown.containment()` (`LIB1`: this package imports nothing outside the
-# standard library), and the lines logged are the client's `orphan_*` ones.
-# --------------------------------------------------------------------------
+# S-NEXT-w6-sdk: the Windows bodies of `sweep_orphans` and `sweep_orphan`,
+# copies of the Linux bodies above (which stay byte-for-byte), run inside
+# `_containment_windows.best_effort_sweep`. The record removals on these
+# paths go through `clear_sidecar`, which on Windows never removes a live
+# owner's record.
 
 
-def _windows_record(pid: int, cli: str) -> dict[str, Any]:
-    """The Linux record plus ``identity``: ``{"image", "created"}`` of the
-    contained child, or ``None`` when it could not be read (a later sweep then
-    never acts on this sidecar)."""
-    identity = teardown.session_identity(pid)
-    return {
-        "pid": pid,
-        "started_at": time.time(),
-        "cli": cli,
-        "identity": None if identity is None else {"image": identity.image, "created": identity.created},
-    }
-
-
-def _recorded_identity(record: dict[str, Any], facade: Any) -> Any:
-    """The identity a Windows sidecar recorded, rebuilt as the facade's
-    ``ProcessIdentity``, or ``None`` when absent or malformed."""
-    raw = record.get("identity")
-    if facade is None or not isinstance(raw, dict):
-        return None
-    image, created = raw.get("image"), raw.get("created")
-    if not isinstance(image, str) or not image:
-        return None
-    if not isinstance(created, int) or isinstance(created, bool):
-        return None
-    return facade.ProcessIdentity(image=image, created=created)
-
-
-def _is_claude_image(image: str, cli: Any) -> bool:
-    """Whether the saved image path is the Claude Code program the session
-    was started with. When the session handed the SDK a program (``cli``),
-    the saved path must be that program's full path (as given, or with links
-    resolved); a different path, even one named ``claude.exe``, is refused.
-    When the SDK chose the program itself (``cli`` empty), the saved path's
-    file name must be ``claude.exe``, the only image the SDK runs on Windows.
-    Either way this is checked on a saved image path that, with the creation
-    time, already equals the live process's, never on a name alone."""
-    key = os.path.normcase(os.path.normpath(image))
-    if isinstance(cli, str) and cli:
-        wanted = {os.path.normcase(os.path.normpath(os.path.abspath(cli)))}
-        try:
-            wanted.add(os.path.normcase(os.path.realpath(cli)))
-        except (OSError, ValueError):
-            pass
-        return key in wanted
-    return os.path.basename(key) == "claude.exe"
-
-
-def _sweep_decline(
-    cache_dir: Path, surface: str, session_key: str | None, log: Callable[[str], None], line: Any, *args: Any
-) -> None:
-    clear_sidecar(cache_dir, surface, session_key)
-    if line is not None:
-        log(line(surface, *args))
-
-
-def _sweep_one_windows(
+def _sweep_surface_windows(
     cache_dir: Path,
     surface: str,
-    session_key: str | None,
-    record: dict[str, Any],
-    pid: int,
-    started_at: float,
-    *,
     log: Callable[[str], None],
+    *,
     pid_alive: Callable[[int], bool],
-    process_start: float,
     messages: ShutdownMessages,
+    process_start: float | None,
 ) -> None:
-    """`K-5` on Windows. Kills the recorded child only when all of these hold:
-    the sidecar recorded an identity; that identity does not predate the
-    current boot (`identity_predates_boot`: its PID, image and creation time
-    can recur across a reboot); the live process at *pid* has exactly that
-    identity (full image path AND creation time, so a reused PID is refused);
-    the saved image is the Claude Code program (:func:`_is_claude_image`); the
-    sidecar is older than this process (as on Linux). The kill contains the
-    process with ``expect=`` the saved identity, so the job is made on a
-    handle that is checked to be that same process, and then goes through
-    `teardown.kill_child` (looked up at call time, as on Linux) which ends the
-    job: the orphan and every descendant it took with it. Anything that
-    cannot be checked declines; every outcome clears the sidecar."""
-    registered = teardown.containment()
-    facade = registered[0] if registered is not None else None
-    saved = _recorded_identity(record, facade)
-    if facade is None or saved is None:
-        _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
+    anchor = default_process_start() if process_start is None else process_start
+    unkeyed = sidecar_path(cache_dir, surface, None)
+    if unkeyed.is_file():
+        record = read_sidecar(cache_dir, surface, None)
+        if record is not None:
+            _sweep_one(
+                cache_dir, surface, None, record,
+                log=log, pid_alive=pid_alive, process_start=anchor, messages=messages,
+            )
+    prefix = f"{surface}.sdk-child."
+    for path in sorted(cache_dir.glob(f"{surface}.sdk-child.*.pid")):
+        session_key = path.name[len(prefix) : -len(".pid")]
+        _sweep_keyed_windows(
+            cache_dir, surface, session_key, log, pid_alive=pid_alive, messages=messages, process_start=anchor,
+        )
+
+
+def _sweep_keyed_windows(
+    cache_dir: Path,
+    surface: str,
+    session_key: str,
+    log: Callable[[str], None],
+    *,
+    pid_alive: Callable[[int], bool],
+    messages: ShutdownMessages,
+    process_start: float | None,
+) -> None:
+    anchor = default_process_start() if process_start is None else process_start
+    path = sidecar_path(cache_dir, surface, session_key)
+    if not path.is_file():
         return
     try:
-        if facade.identity_predates_boot(saved):
-            _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
-            return
-        live = facade.process_identity(pid)
-    except OSError:
-        _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        clear_sidecar(cache_dir, surface, session_key)
         return
-    if live is None:
-        _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
+    if not isinstance(record, dict):
+        clear_sidecar(cache_dir, surface, session_key)
         return
-    if live != saved or not _is_claude_image(saved.image, record.get("cli")):
-        _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_cmdline_mismatch, pid)
-        return
-    if not (started_at < process_start):
-        _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_not_stale, pid)
-        return
-    try:
-        handle = facade.contain_child(pid, expect=saved)
-    except Exception as exc:  # noqa: BLE001 - the sweep never raises
-        handle = getattr(exc, "contained_child", None)
-        if handle is None:
-            _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_uncorroborated, pid)
-            return
-    if handle is None:  # exited, or no longer that identity, since it was read
-        _sweep_decline(cache_dir, surface, session_key, log, messages.orphan_cmdline_mismatch, pid)
-        return
-    teardown.hold_contained(pid, handle, saved)
-    teardown.kill_child(pid, log, pid_alive)
-    clear_sidecar(cache_dir, surface, session_key)
-    if messages.orphan_killed is not None:
-        log(messages.orphan_killed(surface, pid))
+    _sweep_one(
+        cache_dir, surface, session_key, record,
+        log=log, pid_alive=pid_alive, process_start=anchor, messages=messages,
+    )
