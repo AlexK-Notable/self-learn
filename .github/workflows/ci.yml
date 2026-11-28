@@ -53,6 +53,24 @@ jobs:
         working-directory: plugins/self-learn/ui
         run: uv run --no-sync python -m pytest --noconftest -p conftest tests/test_home_floor.py -p no:cacheprovider -q -rs
 
+      - name: Windows observer hook tests
+        working-directory: plugins/self-learn/cli
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "observer-hook-contracts.xml"
+          uv run --no-sync python -m pytest tests/test_hook_entry.py -o xfail_strict=true -p no:cacheprovider -q -rA --junitxml=$report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+          $ran = @($cases | Where-Object {
+            $_.name -cmatch '^test_(windows_console_hook|hook_closed_descriptors)\[' -and !$_.SelectSingleNode("skipped")
+          })
+          $posix = @($cases | Where-Object {
+            ($_.name -cmatch '^test_bash_differential\[' -and $_.skipped.message -ceq "Bash differential runs on POSIX") -or
+              ($_.name -cmatch '^test_linux_child_deadline_survives_hook_death\[' -and $_.skipped.message -ceq "Linux parent-death watchdog")
+          })
+          if ($ran.Count -ne 68 -or $posix.Count -ne 76 -or $cases.Count -ne 144) {
+            throw "Expected 68 native hook cases and 76 POSIX-only skips. Executed $($ran.Count) native cases. Found $($posix.Count) POSIX-only skips and $($cases.Count) total cases."
+          }
+
       - name: Windows names and folders contracts
         working-directory: plugins/self-learn/cli
         run: |
