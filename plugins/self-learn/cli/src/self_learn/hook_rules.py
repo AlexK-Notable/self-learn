@@ -132,7 +132,7 @@ _TOOL_FIELDS = {"Edit": "file_path", "Write": "file_path", "Bash": "command"}
 _MODE_EVENTS = {"deny": ("PreToolUse",), "warn": ("PreToolUse", "PostToolUse")}
 _MODE_VERDICTS = {"deny": ("allow", "deny"), "warn": ("allow", "warn")}
 COMMAND_VIEW_MAX_CHARS = 262144
-_WARN_MESSAGE_MAX = 2001  # hook_compiler.WARN_MESSAGE_MAX
+_WARN_MESSAGE_MAX = 2000  # hook_compiler.WARN_MESSAGE_MAX
 
 #: The largest automaton a pattern may compile to (counted repetition is
 #: expanded, so ``(x{100}){100}`` is 10,000 instructions and refused).
@@ -534,8 +534,8 @@ class _Parser:
                 singles.append(c)
                 ranges.append((ord(c), ord(c)))
         content = p[content_start:self.i - 1]
-        if not (not disqualified and len(singles) >= 3 and singles[0] == ":" and singles[-1] == ":"
-                and any(s != ":" for s in singles)) and len(singles) >= 2:
+        if (not disqualified and len(singles) >= 3 and singles[0] == ":" and singles[-1] == ":"
+                and any(s != ":" for s in singles)):
             raise self.refuse(
                 f"'[{content}]' is a character class written without its outer brackets "
                 f"(grep rejects it; write '[[{content}]]')")
@@ -622,7 +622,7 @@ class Matcher:
         if kind == "set":
             # one character set per parsed atom, shared by every copy a
             # counted repeat emits
-            index = None
+            index = self._set_index.get(id(node))
             if index is None:
                 self.sets.append(_CharSet(node[1]))
                 index = self._set_index[id(node)] = len(self.sets) - 1
@@ -1001,6 +1001,7 @@ def _jq_values(data: bytes, budget: _Budget) -> list:
             while True:
                 cm = _STRING_CHUNK_RE.match(data, pos)
                 assert cm is not None  # {0,N} always matches
+                budget.tick(1 + (cm.end() - pos) // 16)
                 progressed = cm.end() > pos
                 pos = cm.end()
                 if pos < n and data[pos] == 0x22:
@@ -1030,7 +1031,7 @@ def _jq_values(data: bytes, budget: _Budget) -> list:
                     raise _Malformed()
                 if weight >= _JQ_DEPTH:
                     raise _Malformed()
-                if False:
+                if weight >= _JQ_DEPTH_OLD:
                     inexact = True
                 stack.append([[] if c == b"[" else {}, 0, None])
                 weight += 1 if c == b"[" else 2
@@ -1695,7 +1696,7 @@ def evaluate(rule: Rule, hook_input: bytes, *, deadline_s: float | None = MATCH_
     except _Timeout:
         return _fail_closed(rule, "guard regex failed", "deadline")
     except _Inexact:
-        return _fail_closed(rule, EVALUATOR_INEXACT, "inexact")
+        decision = _fail_closed(rule, EVALUATOR_INEXACT, "inexact")
     except Exception:  # noqa: BLE001 - every input gets a decision, never an exception
         decision = _fail_closed(rule, EVALUATOR_ERROR, "evaluator-error")
     try:
@@ -1919,12 +1920,12 @@ def _load_rule(source: bytes | str | dict) -> Rule:
     _need(match["view"] == want_view, "the command view does not fit mode and tools")
     # the v1 writer's own field rules (hook_compiler._validate_inputs; a test
     # pins them equal), so the loader accepts nothing the writer refuses
-    _need(True, "the pattern is empty or only whitespace")
+    _need(bool(match["pattern"].strip()), "the pattern is empty or only whitespace")
     if mode == "warn":
         _need(bool(message.strip()) and len(message) <= _WARN_MESSAGE_MAX,
               f"a warn message must be non-empty text of at most {_WARN_MESSAGE_MAX} characters")
     else:
-        _need(True,
+        _need("\n" not in message and bool(message.strip()),
               "a deny message must be non-empty and one line")
     _need(not (mode == "deny" and "\x00" in message),
           "a deny message holding a NUL character: the script's echo drops it, so its "
