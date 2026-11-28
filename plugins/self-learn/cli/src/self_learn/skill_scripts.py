@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import cast, Any
 
 from . import gitops, intents, settings, skill_registry, skill_writer, worker
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, names
 from .script_screen import screen
 
 MODEL = "claude-fable-5-2"
@@ -248,7 +248,8 @@ def review(home: Path | str, ident: str, *, note: str, run: str | None = None) -
                 stream.write(data)
             fsops.finish_mode(transcript, 0o600)
             extra = (transcript,)
-            result.update(transcript=str(transcript.relative_to(home)), transcript_sha256=hashlib.sha256(data).hexdigest())
+            result.update(transcript=names.relative_key(home, transcript),
+                          transcript_sha256=hashlib.sha256(data).hexdigest())
         row["review"].update(result, completed_at=chrono.now_iso())
         if result["verdict"] == "approve":
             row["state"] = "approved"
@@ -381,7 +382,7 @@ def _deactivate_locked(home: Path, records: list[dict], row: dict, note: str) ->
             _write_block(md, records, row["skill"], recovering=True)
         touched = [p for p in ((target, md) if owned else (md,)) if p.exists() or skill_writer._head_text(root, p) is not None]
         dirty = skill_writer._dirty_under(root, touched)
-        touched = [p for p in touched if os.path.relpath(p, root) in dirty]
+        touched = [p for p in touched if names.relative_key(root, p, method="relpath") in dirty]
         if touched:
             working = md.read_bytes() if md.is_file() else None
             base_md = skill_writer._head_text(root, md)

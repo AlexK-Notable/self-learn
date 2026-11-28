@@ -87,7 +87,7 @@ from pathlib import Path
 from typing import Any
 
 from . import cache_gc, scan
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, names
 
 __all__ = [
     "GIT_CHECK_TIMEOUT",
@@ -417,7 +417,7 @@ def condition_state(notice: Notice, *, timeout: float = GIT_CHECK_TIMEOUT) -> st
     deadline = time.monotonic() + timeout
     recorded = cond.get("hash")
     if not recorded:
-        got = _git(repo, ["status", "--porcelain", "--", file], timeout=timeout)
+        got = _git(repo, ["status", "--porcelain", "--", names.git_arg(Path(repo), file)], timeout=timeout)
         if got is None or got[0] != 0:
             return "unknown"
         return "holds" if got[1] else "clear"
@@ -426,7 +426,10 @@ def condition_state(notice: Notice, *, timeout: float = GIT_CHECK_TIMEOUT) -> st
     rel = _rel_to(repo, file)
     if rel is None:
         return "unknown"
-    work = _git(repo, ["hash-object", f"--path={rel}", "--", file], timeout=max(deadline - time.monotonic(), 0.05))
+    work = _git(
+        repo, ["hash-object", f"--path={rel}", "--", names.git_arg(Path(repo), file)],
+        timeout=max(deadline - time.monotonic(), 0.05),
+    )
     if work is None or work[0] != 0 or not work[1]:
         return "unknown"
     head = head_blob(repo, file, timeout=max(deadline - time.monotonic(), 0.05))

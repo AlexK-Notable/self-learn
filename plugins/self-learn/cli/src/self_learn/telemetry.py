@@ -40,7 +40,7 @@ from typing import BinaryIO, Iterable
 
 from . import attribution, settings
 from .ledger import resolve_home
-from .primitives import chrono, fsops, locks
+from .primitives import chrono, fsops, locks, names
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -210,7 +210,7 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
         event[key] = value
     line = json.dumps(event, separators=(",", ":"), sort_keys=True)
 
-    path = spool_dir() / f"{_month(now)}.{actor()}.jsonl"
+    path = names.component_path(spool_dir(), f"{_month(now)}.{actor()}.jsonl")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         lease = locks.acquire(fh.fileno(), path=path, wait=None)
@@ -319,7 +319,7 @@ def _hold_back(spool_path: Path, fh: BinaryIO, kept: list[str], refused: list[st
     the XDG cache, never the ledger. Rejected file FIRST: a crash in
     between leaves a line in both places (held back again next time),
     never in neither."""
-    target = rejected_dir() / spool_path.name
+    target = names.component_path(rejected_dir(), spool_path.name)
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "a", encoding="utf-8") as out:
         out.write("\n".join(refused) + "\n")
@@ -482,7 +482,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 for spool_path, fh, lines, lease in opened:
                     if not lines:
                         continue
-                    target = telemetry_dir(home) / spool_path.name
+                    target = names.component_path(telemetry_dir(home), spool_path.name)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with open(target, "a+", encoding="utf-8") as out:
                         target_lease = locks.acquire_ledger_target(out.fileno())

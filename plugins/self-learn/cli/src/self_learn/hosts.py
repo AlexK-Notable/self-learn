@@ -67,7 +67,7 @@ from ruamel.yaml.error import YAMLError
 
 from . import config as _config
 from . import attribution, gitops, intents
-from .primitives import chrono, fsops, procs, yamlio
+from .primitives import chrono, fsops, names, procs, yamlio
 
 __all__ = [
     "HOST_KINDS",
@@ -238,9 +238,7 @@ def slug_for(path: Path | str) -> str:
     ``<readable>-<sha256(resolved)[:8]>``: still greppable by eye, stable
     per path, and injective for any pair of paths that do not also
     collide on SHA-256."""
-    resolved = str(Path(path).resolve())
-    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
-    return f"{resolved.replace('/', '-')}-{digest}"
+    return names.project_slug(path)
 
 
 def host_slug(home: Path | str, path: Path | str, *, scope_kind: str | None = None) -> str:
@@ -348,7 +346,7 @@ def load_hosts(home: Path | str) -> Hosts:
                 projects.append(p)
                 mode = _parse_mode(path, f"projects[{i}].mode", entry.get("mode"))
                 if mode != "git":
-                    project_modes[str(p.resolve())] = mode
+                    project_modes[names.registration_key(p.resolve())] = mode
             else:
                 raise HostsError(
                     f"{path}: projects[{i}] must be a path string or a "
@@ -378,7 +376,7 @@ def save_hosts(home: Path | str, hosts: Hosts) -> Path:
         root_value = str(hosts.skills_root)
     projects_value = []
     for p in hosts.projects:
-        mode = hosts.project_modes.get(str(Path(p).resolve()), "git")
+        mode = hosts.project_modes.get(names.registration_key(Path(p).resolve()), "git")
         entry = {"path": str(p)}
         if mode != "git":
             entry["mode"] = mode
@@ -395,8 +393,8 @@ def save_hosts(home: Path | str, hosts: Hosts) -> Path:
 
 def is_project_host(hosts: Hosts, path: Path | str) -> bool:
     """True iff *path* (resolved) is a registered project host."""
-    target = Path(path).resolve()
-    return any(Path(p).resolve() == target for p in hosts.projects)
+    target = names.registration_key(Path(path).resolve())
+    return any(names.registration_key(Path(p).resolve()) == target for p in hosts.projects)
 
 
 def _check_registration(registration: str | None) -> None:
@@ -441,7 +439,7 @@ def host_mode(
     root_mode: str | None = None
     if hosts.skills_root is not None:
         try:
-            if Path(hosts.skills_root).expanduser().resolve() == target:
+            if names.registration_key(Path(hosts.skills_root).expanduser().resolve()) == names.registration_key(target):
                 root_mode = hosts.skills_root_mode
         except OSError:
             pass
@@ -451,8 +449,8 @@ def host_mode(
             resolved = Path(p).expanduser().resolve()
         except OSError:
             continue
-        if resolved == target:
-            project_mode = hosts.project_modes.get(str(resolved), "git")
+        if names.registration_key(resolved) == names.registration_key(target):
+            project_mode = hosts.project_modes.get(names.registration_key(resolved), "git")
             break
     if registration == "project" and project_mode is not None:
         return project_mode
@@ -833,7 +831,8 @@ def _host_add(
     hosts = load_hosts(home)
     existing_mode: str | None = None
     if kind == "skills-root":
-        if hosts.skills_root is not None and hosts.skills_root.resolve() == target:
+        if (hosts.skills_root is not None
+                and names.registration_key(hosts.skills_root.resolve()) == names.registration_key(target)):
             existing_mode = hosts.skills_root_mode
     else:
         if is_project_host(hosts, target):
@@ -903,7 +902,7 @@ def _host_add(
     else:
         new_modes = dict(hosts.project_modes)
         if mode != "git":
-            new_modes[str(target)] = mode
+            new_modes[names.registration_key(target)] = mode
         hosts = Hosts(
             skills_root=hosts.skills_root,
             projects=[*hosts.projects, target],
@@ -1007,7 +1006,10 @@ def _host_set_mode(
     target = target.resolve()
 
     hosts = load_hosts(home)
-    root_hit = hosts.skills_root is not None and Path(hosts.skills_root).expanduser().resolve() == target
+    root_hit = (
+        hosts.skills_root is not None
+        and names.registration_key(Path(hosts.skills_root).expanduser().resolve()) == names.registration_key(target)
+    )
     project_hit = is_project_host(hosts, target)
     if not root_hit and not project_hit:
         raise HostsError(
@@ -1026,7 +1028,8 @@ def _host_set_mode(
         kind = registration
         if not (root_hit if kind == "skills-root" else project_hit):
             raise HostsError(f"{target} has no {kind} registration — nothing to change")
-    old_mode = hosts.skills_root_mode if kind == "skills-root" else hosts.project_modes.get(str(target), "git")
+    old_mode = (hosts.skills_root_mode if kind == "skills-root"
+                else hosts.project_modes.get(names.registration_key(target), "git"))
 
     problem = host_path_problem(home, target, kind, mode=mode, check_marker=False)
     if problem is not None:
@@ -1058,9 +1061,9 @@ def _host_set_mode(
         )
     else:
         if mode == "git":
-            new_modes.pop(str(target), None)
+            new_modes.pop(names.registration_key(target), None)
         else:
-            new_modes[str(target)] = mode
+            new_modes[names.registration_key(target)] = mode
         hosts = Hosts(
             skills_root=hosts.skills_root,
             projects=hosts.projects,
@@ -1107,9 +1110,9 @@ def _unexclude_for_git(hosts: Hosts, target: Path) -> tuple[str, ...]:
     outside the block are never touched (:func:`gitops.drop_excluded`)."""
     still_plain = (
         hosts.skills_root is not None
-        and Path(hosts.skills_root).expanduser().resolve() == target
+        and names.registration_key(Path(hosts.skills_root).expanduser().resolve()) == names.registration_key(target)
         and hosts.skills_root_mode == "plain"
-    ) or hosts.project_modes.get(str(target)) == "plain"
+    ) or hosts.project_modes.get(names.registration_key(target)) == "plain"
     if still_plain:
         return ()
     repo = gitops.work_tree_of(target / MARKER_FILENAME)
@@ -1186,7 +1189,8 @@ class PolicyResult:
 
 def _same_path(a: Path | str, b: Path | str) -> bool:
     try:
-        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+        return (names.registration_key(Path(a).expanduser().resolve())
+                == names.registration_key(Path(b).expanduser().resolve()))
     except OSError:
         return False
 
@@ -1217,7 +1221,7 @@ def policy_changes(hosts: Hosts) -> list[PolicyChange]:
         except OSError:
             continue
         wanted = policy_mode(hosts, resolved)
-        current = hosts.project_modes.get(str(resolved), "git")
+        current = hosts.project_modes.get(names.registration_key(resolved), "git")
         if wanted is not None and wanted != current:
             out.append(PolicyChange("project", resolved, current, wanted))
     return out
@@ -1338,7 +1342,7 @@ def removed_hosts(home: Path | str) -> dict[str, tuple[str, str]]:
         if match is None:
             continue
         real = os.path.realpath(match.group(1))
-        out.setdefault(real, (short, trailers.get("By", "")))  # newest first: the first wins
+        out.setdefault(names.registration_key(real), (short, trailers.get("By", "")))  # newest first: the first wins
     return out
 
 
@@ -1412,9 +1416,7 @@ class RegistrationRefused(HostsError):
 
 
 def _cache_root() -> Path:
-    cache = os.environ.get("XDG_CACHE_HOME")
-    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    return base / "self-learn"
+    return names.cache_root()
 
 
 def _under(path: Path, root: Path) -> bool:
@@ -1442,7 +1444,7 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
     if not target.is_dir():
         return f"{text} is not an existing directory"
     real = Path(os.path.realpath(target))
-    user_home = Path(os.path.realpath(Path.home()))
+    user_home = Path(os.path.realpath(names.user_home()))
     from . import settings as _settings  # lazy: settings does not import hosts
 
     extra, _ignored = _settings.host_extra_roots(home)
@@ -1461,13 +1463,13 @@ def registration_problem(home: Path | str, raw_path: object) -> str | None:
     if hosts.skills_root is not None and _same_path(hosts.skills_root, real):
         return f"{real} is already registered (the skills root)"
     if is_project_host(hosts, real):
-        mode = hosts.project_modes.get(str(real), "git")
+        mode = hosts.project_modes.get(names.registration_key(real), "git")
         return f"{real} is already registered (a {mode} project)"
     try:
         removed = removed_hosts(home)
     except HostsError as exc:
         return f"{real}: the ledger's record of removed hosts could not be read ({exc})"
-    hit = removed.get(str(real))
+    hit = removed.get(names.registration_key(real))
     if hit is not None:
         sha, actor = hit
         return (
@@ -1525,10 +1527,10 @@ def _project_bucket_for(home: Path, ref: str) -> Path | None:
     """Locate a project bucket by slug OR by (old) project path — the two
     things a human can still name once the repo itself has moved."""
     projects = home / "projects"
-    by_slug = projects / ref
+    by_slug = names.component_path(projects, ref)
     if by_slug.is_dir() and by_slug.parent == projects:
         return by_slug
-    by_path = projects / slug_for(ref)
+    by_path = names.component_path(projects, slug_for(ref))
     return by_path if by_path.is_dir() else None
 
 
@@ -1597,12 +1599,13 @@ def host_rebind(
     # never a mode change (this docstring's own claim), so the OLD
     # entry's mode is exactly what the NEW path must be validated as.
     target = validate_host_path(home, new_path, "project", mode=old_mode)
-    if old_path is not None and old_path.resolve() == target:
+    if old_path is not None and names.registration_key(old_path.resolve()) == names.registration_key(target):
         raise HostsError(f"{target} is already this bucket's path — nothing to rebind")
     if (
         old_path is not None
         and hosts.skills_root is not None
-        and Path(hosts.skills_root).expanduser().resolve() == old_path.resolve()
+        and names.registration_key(Path(hosts.skills_root).expanduser().resolve())
+        == names.registration_key(old_path.resolve())
     ):
         # S-82: the skills root moves with this path too (below), so the
         # new path must also be sound for the ROOT's registration and
@@ -1615,7 +1618,7 @@ def host_rebind(
     # Everything below MUTATES, so the lock opens here (BLOCKER 1).
     new_bucket = bucket
     if bucket is not None:
-        new_bucket = home / "projects" / slug_for(target)
+        new_bucket = names.component_path(home / "projects", slug_for(target))
         if new_bucket != bucket and new_bucket.exists():
             raise HostsError(
                 f"a bucket for {target} already exists ({new_bucket}) — "
@@ -1660,7 +1663,7 @@ def host_rebind(
             assert new_bucket is not None
             if new_bucket != bucket:
                 proc = gitops._git(  # noqa: SLF001 — same module family
-                    home, "mv", str(bucket), str(new_bucket)
+                    home, "mv", names.git_arg(home, bucket), names.git_arg(home, new_bucket)
                 )
                 if proc.returncode != 0:  # untracked bucket: a plain move is fine
                     bucket.rename(new_bucket)
@@ -1669,7 +1672,8 @@ def host_rebind(
 
         projects = [
             target
-            if (old_path is not None and Path(p).resolve() == old_path.resolve())
+            if (old_path is not None
+                and names.registration_key(Path(p).resolve()) == names.registration_key(old_path.resolve()))
             else p
             for p in hosts.projects
         ]
@@ -1690,14 +1694,14 @@ def host_rebind(
         root_moves = (
             skills_root is not None
             and old_path is not None
-            and Path(skills_root).resolve() == old_path.resolve()
+            and names.registration_key(Path(skills_root).resolve()) == names.registration_key(old_path.resolve())
         )
         if old_path is not None:
-            new_modes.pop(str(old_path.resolve()), None)
+            new_modes.pop(names.registration_key(old_path.resolve()), None)
         if root_moves:
             skills_root = target
         if old_mode != "git" and (old_was_project or not root_moves):
-            new_modes[str(target.resolve())] = old_mode
+            new_modes[names.registration_key(target.resolve())] = old_mode
         touched.append(
             save_hosts(
                 home,
@@ -1761,7 +1765,7 @@ def records_targeting(
             project_path = bucket_project_path(bucket.path)
             if project_path is None:
                 continue
-            if Path(project_path).expanduser().resolve() != target:
+            if names.registration_key(Path(project_path).expanduser().resolve()) != names.registration_key(target):
                 continue
         elif bucket.scope == "skill":
             if skills_root is None or skills_root != target:
@@ -1835,9 +1839,13 @@ def host_remove(
         raise HostsError(f"ledger home {home} does not exist")
     target = Path(path).expanduser().resolve()
     hosts = load_hosts(home)
-    projects = [p for p in hosts.projects if Path(p).expanduser().resolve() != target]
+    projects = [p for p in hosts.projects
+                if names.registration_key(Path(p).expanduser().resolve()) != names.registration_key(target)]
     root = hosts.skills_root
-    root_hit = root is not None and Path(root).expanduser().resolve() == target
+    root_hit = (
+        root is not None
+        and names.registration_key(Path(root).expanduser().resolve()) == names.registration_key(target)
+    )
     project_hit = len(projects) != len(hosts.projects)
     if not project_hit and not root_hit:
         raise HostsError(f"{target} is not a registered host — nothing to remove")
@@ -1872,7 +1880,7 @@ def host_remove(
     new_modes = (
         dict(hosts.project_modes)
         if registration == "skills-root"
-        else {k: v for k, v in hosts.project_modes.items() if k != str(target)}
+        else {k: v for k, v in hosts.project_modes.items() if k != names.registration_key(target)}
     )
     hosts = Hosts(
         skills_root=None if root_hit else root,

@@ -36,6 +36,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+from self_learn.primitives import names
 from self_learn.primitives import fsops
 
 __all__ = [
@@ -102,10 +103,7 @@ def resolve_token_path() -> Path:
 
     from self_learn.serve import cache_dir_readonly
 
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime_dir:
-        return Path(runtime_dir) / "self-learn" / TOKEN_FILE_NAME
-    return cache_dir_readonly() / TOKEN_FILE_NAME
+    return names.runtime_root(fallback=cache_dir_readonly) / TOKEN_FILE_NAME
 
 
 def write_token_file(token: str) -> Path:
