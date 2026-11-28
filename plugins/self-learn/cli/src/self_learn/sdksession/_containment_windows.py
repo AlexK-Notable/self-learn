@@ -314,7 +314,7 @@ async def close_session(client: Any, log: Callable[[str], None]) -> None:
     if session.handle is None and session.identity is None:
         session.ended = True
         return
-    pass  # b4
+    _end(session, safe_log(log))
 
 
 async def run_kill_ladder(
