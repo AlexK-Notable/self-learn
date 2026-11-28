@@ -955,7 +955,7 @@ def _popen(argv, executable, cwd, env, flags, stdin, stdout, stderr):
     creates its children inheriting every inheritable handle: the shared lock
     keeps the two from overlapping."""
     return subprocess.Popen(argv, executable=executable, cwd=cwd, env=env, stdin=stdin,
-                            stdout=stdout, stderr=stderr, creationflags=flags, close_fds=False)  # break D23
+                            stdout=stdout, stderr=stderr, creationflags=flags, close_fds=True)
 
 
 def _open_log(path) -> int:
@@ -1019,7 +1019,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
             stderr = subprocess.STDOUT
 
         def launch(flags):
-            if True:  # break D23: no lock (and no handle list, below)
+            with _launch_lock:
                 return _popen(argv, executable, cwd, environment, flags, subprocess.DEVNULL, stdout, stderr)
 
         if not _in_a_job():
@@ -1329,11 +1329,17 @@ class _Pins:
     def __init__(self, owner):
         current = win32api.GetCurrentProcess()
         same = win32con.DUPLICATE_SAME_ACCESS
-        self.job: Any = owner.job  # break D19: borrowed, not pinned
-        self.process: Any = owner.process
+        self.job: Any = win32api.DuplicateHandle(current, owner.job, current, 0, False, same)
+        try:
+            self.process: Any = win32api.DuplicateHandle(current, owner.process, current, 0, False, same)
+        except BaseException:
+            win32api.CloseHandle(self.job)
+            raise
 
     def close(self):
-        pass
+        with _Handles() as closing:
+            closing.callback(win32api.CloseHandle, self.job)
+            closing.callback(win32api.CloseHandle, self.process)
 
 
 def _read_pipes(proc):
@@ -1363,7 +1369,7 @@ async def _settle(proc, pins, grace):
             await asyncio.sleep(.01)
         forced = [pipe for pipe in pipes if not pipe.is_closing()]
         for pipe in forced:
-            pass  # break D17
+            pipe.close()
         return _active_processes(pins.job), len(forced)
     finally:
         pins.close()
@@ -1395,7 +1401,7 @@ async def _finish(proc, pins, grace, failure):
     report = f"the owned job of PID {proc.pid} still has {active} process(es) after {grace} s"
     if forced:
         report += f"; {forced} read pipe(s) held by a writer outside the job were closed"
-    if False:  # break D18
+    if active:
         if failure is None:
             raise TimeoutError(report)
         failure.add_note(report)
@@ -1421,7 +1427,7 @@ async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool
     except BaseException as failure:
         # Cancelled, or a stop that failed: the tree still goes.
         if pins is not None:
-            pins.close()  # break D14: no teardown on the way out
+            await _finish(proc, pins, kill_grace, failure)
         raise
     if pins is not None:
         with _os_errors():
