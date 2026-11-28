@@ -5817,7 +5817,7 @@ def _host_phase(
                     try:
                         gitops.stage(spec.host_path, host_paths)
                         rel = host_paths[0].relative_to(spec.host_path)
-                        if os.name == "nt" and False:  # MUTANT M4b
+                        if os.name == "nt":  # the commit subject names it with slashes
                             rel = rel.as_posix()
                         host_sha = gitops.commit(
                             spec.host_path,
