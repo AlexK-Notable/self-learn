@@ -211,7 +211,11 @@ def _prune_homes(
                 out.too_recent += 1
                 continue
         except OSError:
-            raise
+            if os.name != "nt":
+                raise
+            # An uninspectable entry can also be inside this home. Keep the
+            # whole home so rmtree cannot reach that entry later in the pass.
+            continue
         if not dry_run:
             try:
                 shutil.rmtree(directory)
@@ -285,7 +289,7 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
                         if fsops.is_link(root / GLOB_WITNESS_DIR / entry.name):
                             continue
                     except OSError:
-                        raise
+                        continue
                 try:
                     info = entry.stat(follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode):
