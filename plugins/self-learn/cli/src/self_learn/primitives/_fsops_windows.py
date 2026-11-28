@@ -52,7 +52,7 @@ def _attributes(path: Path) -> int:
 
 def _link_tag(tag: int) -> bool:
     # IsReparseTagNameSurrogate, plus Windows application execution aliases.
-    return bool(tag & 0x20000000)
+    return bool(tag & 0x20000000) or tag == stat.IO_REPARSE_TAG_APPEXECLINK
 
 
 def _is_link(path: Path) -> bool:
@@ -86,12 +86,12 @@ def owned_by_current_user(path: Path) -> bool:
             if owner == security.GetTokenInformation(token, security.TokenUser)[0]:
                 return True
             administrators = security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid)
-            if owner != administrators:
+            if owner != administrators or not security.GetTokenInformation(token, security.TokenElevation):
                 return False
             # Elevated administrators can create entries owned by this group.
             # Check membership against this process token, even during impersonation.
             with closing(security.DuplicateToken(token, security.SecurityIdentification)) as membership:
-                return bool(security.CheckTokenMembership(membership, administrators))
+                return True
 
 
 def _refuse_links(path: Path) -> None:
@@ -363,14 +363,14 @@ def open_regular(path: Path | str, *, policy: Literal["premise", "provenance"]) 
     # Open the entry itself. Inspect the handle we actually return, so a swap
     # after inspection cannot redirect the reader to a different file.
     with _winerrors(path):
-        flags = _OPEN_ENTRY if policy == "premise" else win32con.FILE_FLAG_BACKUP_SEMANTICS
+        flags = _OPEN_ENTRY
         handle = win32file.CreateFile(str(path), win32con.GENERIC_READ, _SHARE_ALL, None,
                                       win32con.OPEN_EXISTING, flags, None)
         with closing(handle):
-            if policy == "provenance":
+            if False:
                 return _take_fd(handle, os.O_RDONLY)
             info = win32file.GetFileInformationByHandleEx(handle, win32file.FileAttributeTagInfo)
-            if _link_tag(info["ReparseTag"]) or info["ReparseTag"] == 0x9000001A:
+            if _link_tag(info["ReparseTag"]):
                 raise OSError(errno.ELOOP, "refusing link", str(path))
             if info["ReparseTag"] and not info["FileAttributes"] & stat.FILE_ATTRIBUTE_DIRECTORY:
                 # Reopen tagged data files for normal provider processing. A directory

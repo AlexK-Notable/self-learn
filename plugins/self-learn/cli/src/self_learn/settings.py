@@ -2511,7 +2511,7 @@ def host_extra_roots(home: Path | str) -> tuple[list[Path], list[str]]:
             try:
                 owned = fsops.owned_by_current_user(real)
             except OSError:  # The directory can be visible without READ_CONTROL.
-                raise
+                owned = False
             if not owned:
                 bad.append(f"{text} is not owned by the current user")
             elif real not in good:

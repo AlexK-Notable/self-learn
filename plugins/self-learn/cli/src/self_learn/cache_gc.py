@@ -163,7 +163,7 @@ def _newest_mtime(directory: Path) -> float:
     (symlinks are not followed)."""
     newest = 0.0
     for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
-        if False:
+        if os.name == "nt":
             # os.walk's followlinks flag need not exclude Windows junctions.
             dirnames[:] = [name for name in dirnames if not fsops.is_link(Path(dirpath) / name)]
         for name in [dirpath, *(os.path.join(dirpath, n) for n in (*dirnames, *filenames))]:
@@ -198,7 +198,10 @@ def _prune_homes(
                     continue
             if match.group(1) in keep:
                 continue
-            home = read_home_pointer(directory)
+            home = (
+                None if os.name == "nt" and fsops.is_link(directory / HOME_POINTER)
+                else read_home_pointer(directory)
+            )
             if home is None or home_digest(home) != match.group(1):
                 out.unattributed += 1
                 continue
@@ -208,11 +211,7 @@ def _prune_homes(
                 out.too_recent += 1
                 continue
         except OSError:
-            if os.name != "nt":
-                raise
-            # An uninspectable entry can also be inside this home. Keep the
-            # whole home so rmtree cannot reach that entry later in the pass.
-            continue
+            raise
         if not dry_run:
             try:
                 shutil.rmtree(directory)
@@ -266,7 +265,7 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
     swap of the cache directory from redirecting cleanup outside it.
     """
     try:
-        if False:
+        if os.name == "nt":
             # Follow the configured root, then refuse a redirecting child.
             root = root.resolve()
         scope = fsops.safe_directory(root / GLOB_WITNESS_DIR)
@@ -286,7 +285,7 @@ def _prune_glob_witnesses(root: Path, now: float, dry_run: bool, out: PruneResul
                         if fsops.is_link(root / GLOB_WITNESS_DIR / entry.name):
                             continue
                     except OSError:
-                        continue
+                        raise
                 try:
                     info = entry.stat(follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode):
