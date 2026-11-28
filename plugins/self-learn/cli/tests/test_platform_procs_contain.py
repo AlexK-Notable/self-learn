@@ -1100,6 +1100,7 @@ def test_windows_refused_assignment_surfaces_winerror_and_kills_nothing(tmp_path
         job = real_create(*args)
         created.append(job)
         return job
+    unclaimed_before = len(backend.unclaimed)  # module state other tests may leave
     try:
         failure = pywintypes.error(winerror.ERROR_ACCESS_DENIED, "AssignProcessToJobObject", "injected")
         with monkeypatch.context() as patch:
@@ -1110,7 +1111,7 @@ def test_windows_refused_assignment_surfaces_winerror_and_kills_nothing(tmp_path
         assert caught.value.winerror == winerror.ERROR_ACCESS_DENIED
         assert caught.value.__cause__ is failure
         assert len(created) == 1 and int(created[0]) == 0  # the job was released
-        assert not backend.unclaimed
+        assert len(backend.unclaimed) == unclaimed_before  # a refused, empty job is not handed over
         time.sleep(0.2)
         assert watch.alive() == [True, True]
 
