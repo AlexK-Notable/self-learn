@@ -409,7 +409,7 @@ _PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION
 # SYNCHRONIZE lets terminate_contained wait for the process itself to exit.
 _PROCESS_CONTAIN = (win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE
                     | win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE)
-_JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK | win32job.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+_JOB_FLAGS = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | win32job.JOB_OBJECT_LIMIT_BREAKAWAY_OK
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _MICROSECOND = timedelta(microseconds=1)
 _TERMINATE_SECONDS = 5.0
@@ -455,7 +455,7 @@ def _open_process(pid, rights):
     try:
         return win32api.OpenProcess(rights, False, pid)
     except pywintypes.error as exc:
-        if exc.winerror == -1:
+        if exc.winerror == winerror.ERROR_INVALID_PARAMETER:
             return None
         raise
 
@@ -540,7 +540,6 @@ def _adopt_descendants(job, root_pid, root_created, held):
     parent PID was reused by our child is older than our child, and is left
     alone. Nothing here raises: the child is already in the job, and a failed
     sweep must not cost it its life, so failures are reported instead."""
-    return [], [], True
     tree = {root_pid: root_created}
     adopted: list[int] = []
     uncovered: list[tuple[int, int]] = []
@@ -616,7 +615,7 @@ def contain_child(pid: int, *, expect: ProcessIdentity | None = None) -> Contain
         # Closed with the stack unless handed to the ContainedChild below; it
         # is still empty if assignment fails, so closing it kills nothing.
         job = _new_job()
-        _leak.append(job)
+        handles.callback(win32api.CloseHandle, job)
         win32job.AssignProcessToJobObject(job, process)
         held = [process]
         adopted, uncovered, complete = _adopt_descendants(job, pid, identity.created, held)
@@ -655,7 +654,6 @@ def terminate_contained(handle: ContainedChild, *, timeout: float = _TERMINATE_S
 
 
 _self_job: list[Any] = []
-_leak: list[Any] = []
 _self_lock = threading.Lock()
 
 
