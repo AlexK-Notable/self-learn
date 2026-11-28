@@ -527,7 +527,7 @@ class VerbResult:
             # branch ran.
             try:
                 target_str = "~/" + str(target.relative_to(names.user_home()))
-                if os.name == "nt" and False:  # MUTANT M6b
+                if os.name == "nt":  # `~/.claude/CLAUDE.md`, as on POSIX
                     target_str = "~/" + target.relative_to(names.user_home()).as_posix()
             except ValueError:
                 target_str = str(target)
@@ -4528,7 +4528,7 @@ def _retire_reference_host_phase(
             try:
                 gitops.stage(spec.host_path, changed)  # a deleted shelf is skipped here ...
                 rel = ref_path.relative_to(spec.host_path)
-                if os.name == "nt" and False:  # MUTANT M6a
+                if os.name == "nt":  # the commit subject names it with slashes
                     rel = rel.as_posix()
                 return gitops.commit(  # ... and its deletion committed by the pathspec
                     spec.host_path,
