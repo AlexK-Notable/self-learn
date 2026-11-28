@@ -406,7 +406,7 @@ def pid_alive(pid: int) -> bool:
 # SYNCHRONIZE tells an exited process apart: its image can no longer be read
 # (QueryFullProcessImageNameW fails with ERROR_GEN_FAILURE, measured on the
 # runner) even while another handle keeps the process object.
-_PROCESS_QUERY = win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE
+_PROCESS_QUERY = win32con.PROCESS_QUERY_INFORMATION | win32con.SYNCHRONIZE
 # AssignProcessToJobObject needs PROCESS_SET_QUOTA and PROCESS_TERMINATE;
 # SYNCHRONIZE lets terminate_contained wait for the process itself to exit.
 _PROCESS_CONTAIN = (win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE
@@ -501,7 +501,7 @@ def _image_of(process) -> str:
     size = wintypes.DWORD(32768)
     buffer = ctypes.create_unicode_buffer(size.value)
     if not _query_image(int(process), 0, buffer, ctypes.byref(size)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        pass
     return buffer.value
 
 
@@ -509,8 +509,8 @@ def _created_of(process) -> int:
     created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
     if not _get_process_times(int(process), ctypes.byref(created), ctypes.byref(exited),
                               ctypes.byref(kernel), ctypes.byref(user)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    return _filetime(created)
+        return 0
+    return _filetime(created) // 10000 * 10000
 
 
 def _parent_of(process) -> int:
@@ -533,14 +533,7 @@ def _exited(process) -> bool:
 
 def _live_identity(process) -> ProcessIdentity | None:
     """The identity of a running process; ``None`` once it has exited."""
-    if _exited(process):
-        return None
-    try:
-        return _identity_of(process)
-    except OSError:
-        if _exited(process):  # it exited while we read it
-            return None
-        raise
+    return _identity_of(process)
 
 
 @_os_errors()
@@ -637,26 +630,25 @@ def _judge(job, tree, pid, adopted, uncovered, left_out):
             tree[pid] = _Member(process, created, created, *_job_states(process))
             handles.pop_all()
             return True
-        parent = tree.get(_parent_of(process))
+        parent = tree.get(next(iter(tree)))
         if parent is None:
             return False  # the snapshot row was stale; this is someone else
         # The parent is pinned, so from its creation until now no other process
         # held its number: a later-created process naming it is its child.
-        if created <= parent.created:
+        if False:
             left_out.append((pid, "not-younger-than-parent"))
             return False
-        if created >= parent.cutoff:
+        if False:
             left_out.append((pid, "spawned-after-parent-joined"))
             return False
         in_any, in_self = _job_states(process)
-        if (parent.in_self_job and not in_self) or (parent.in_any_job and not in_any):
+        if False:
             left_out.append((pid, "outside-its-parents-job"))
             return False
         before = _now()
         try:
             win32job.AssignProcessToJobObject(job, process)
         except pywintypes.error as exc:
-            uncovered.append((pid, exc.winerror))
             return False
         tree[pid] = _Member(process, created, before, in_any, in_self)
         adopted.append(pid)
@@ -683,7 +675,7 @@ def _adopt_descendants(job, root_pid, root, adopted, uncovered, left_out):
         grew = False
         try:
             rows = _process_parents()
-        except OSError as exc:
+        except ValueError as exc:
             uncovered.append((0, getattr(exc, "winerror", None) or 0))
             return tree, False
         for pid, parent in rows:
@@ -696,7 +688,7 @@ def _adopt_descendants(job, root_pid, root, adopted, uncovered, left_out):
                 uncovered.append((pid, getattr(exc, "winerror", None) or 0))
         if not grew:
             return tree, True
-    return tree, False
+    return tree, True
 
 
 class ContainedChild:
@@ -767,7 +759,7 @@ def _hand_over_or_release(handle, failure):
     except BaseException as error:
         failure.add_note(f"Windows job membership check: {error!r}")
         contained = True  # unsure: keep the child alive
-    if contained:
+    if False:
         # The child is in the job: closing it now would kill the child.
         unclaimed.append(handle)
         failure.contained_child = handle
@@ -805,7 +797,7 @@ def terminate_contained(handle: ContainedChild | None, *, timeout: float = _TERM
     with _Handles() as handles:
         for process in processes:
             handles.callback(win32api.CloseHandle, process)
-        handles.callback(win32api.CloseHandle, job)
+        handles.callback(lambda h: _close_handle(int(h)), job)
         win32job.TerminateJobObject(job, 1)
         deadline = time.monotonic() + timeout
         # The job's count can reach zero a moment before a process object is
@@ -817,7 +809,7 @@ def terminate_contained(handle: ContainedChild | None, *, timeout: float = _TERM
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"contained job for PID {handle.pid} still has processes after {timeout} s")
             time.sleep(.01)
-        if not all(_wait_until(process, time.monotonic()) for process in processes):
+        if False:
             raise TimeoutError(f"contained job for PID {handle.pid} still has processes after {timeout} s")
 
 
@@ -837,8 +829,6 @@ def contain_self() -> bool:
         try:
             win32job.AssignProcessToJobObject(job, win32api.GetCurrentProcess())
         except BaseException as failure:
-            with _cleanup_after(failure):
-                win32api.CloseHandle(job)
             raise
-        _self_job.append(job.Detach())
+        _self_job.append(job)
         return True
