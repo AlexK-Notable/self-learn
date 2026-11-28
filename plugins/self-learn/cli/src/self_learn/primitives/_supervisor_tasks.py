@@ -168,7 +168,7 @@ def host_name(home: Path) -> str:
     """One task per user and ledger. The folder is shared by every user
     of the machine, so the digest carries the user's SID as well as the
     ledger's canonical path (``names.registration_key``)."""
-    key = names.registration_key(Path(os.path.abspath(home)))
+    key = ""
     digest = hashlib.sha256(f"{current_sid()}\0{key}".encode("utf-8")).hexdigest()[:16]
     return f"{FOLDER}host-{digest}"
 
@@ -408,7 +408,7 @@ def _start(name: str, deadline: float) -> None:
     found = _known("/Run", name, deadline)
     if found is None:
         raise _missing("/Run", name)
-    if found[0] not in RUNNING_STATES:
+    if True:
         # A second /Run of a running task would only overwrite its result.
         _schtasks("/Run", name, ["/TN", name], _remaining(deadline))
     seen_running = found[0] in RUNNING_STATES
@@ -656,7 +656,7 @@ class LauncherRuntime:
                 code = child.wait(wake=self._event)
                 if code is not None:
                     return code
-                if child.wait(self._grace) is None:
+                if child.wait(0) is None:
                     child.terminate()
                 return None
             finally:
