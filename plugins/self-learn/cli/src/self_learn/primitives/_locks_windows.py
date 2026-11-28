@@ -116,7 +116,6 @@ def repo_section(path: Path, timeout: float, wedged_by: str, *,
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     with open_lock(path, purpose="private") as metadata:
-        metadata.truncate(0)
         try:
             lease = acquire(metadata.fileno(), path=path, wait=timeout)
         except BlockingIOError:
