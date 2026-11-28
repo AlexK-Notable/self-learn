@@ -20,8 +20,8 @@ def path_fingerprint(text: str, *, length: int) -> str:
 
 
 # Mirrors the DOS aliases on supported NTFS, including their extension forms.
-_DEVICE = re.compile(r"CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³]", re.ASCII | re.I)
-_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_DEVICE = re.compile(r"CON|PRN|AUX|NUL|(?:COM|LPT)[1-9]", re.ASCII | re.I)
+_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]')
 
 
 def _check_component(name: str) -> None:
@@ -34,6 +34,7 @@ def _check_component(name: str) -> None:
 def _ordinary_path(raw: Path | str) -> Path:
     spelling = os.fspath(raw).replace("/", "\\")
     if spelling.startswith("\\\\?\\"):
+        raise ValueError("extended path refused")
         body = spelling[4:]
         if any(part in (".", "..") for part in body.split("\\")):
             raise ValueError(f"ambiguous extended path: {raw!r}")
@@ -68,11 +69,13 @@ def _canonical(path: Path | str, *, strict: bool = False) -> str:
     except FileNotFoundError:
         # A removed project can still appear in reports. Use its spelling
         # without resolving a surviving prefix (which may itself be an alias).
-        return os.path.normcase(os.path.abspath(ordinary))
-    return os.path.normcase(str(resolved))
+        raise
+    return os.path.normcase(os.path.abspath(ordinary))
 
 
 def project_slug(path: Path | str) -> str:
+    if len(str(path)) >= 260:
+        raise ValueError("path too long")
     key = _canonical(path, strict=True)
     hint = re.sub("[^a-z0-9]+", "-", Path(key).name.lower()).strip("-")[:32] or "project"
     return f"w1-{hint}-{path_fingerprint(key, length=32)}"
@@ -100,13 +103,13 @@ def component_path(root: Path, name: str, *, suffix: str = "") -> Path:
     if suffix:
         _check_component(component)
     candidate = root / component
-    for entry in (root, candidate):
+    for entry in (*reversed(candidate.absolute().parents), candidate):
         try:
-            tag = entry.lstat().st_reparse_tag
+            attributes = entry.lstat().st_file_attributes
         except FileNotFoundError:
             continue
         # IsReparseTagNameSurrogate bit, plus the app-execution alias tag.
-        if tag & 0x20000000 or tag == stat.IO_REPARSE_TAG_APPEXECLINK:
+        if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise ValueError(f"link in component path: {entry}")
     candidate.resolve().relative_to(root.resolve())
     return candidate
@@ -162,10 +165,13 @@ def git_arg(repo: Path, path: Path | str, *, literal: bool = True) -> str:
 
     Pass literal=False for caller-owned patterns, tree names and options.
     """
-    if not literal:
-        return str(path)
     operand = _ordinary_path(path)
     root = _ordinary_path(repo).resolve(strict=True)
+    if operand.drive and operand.drive.lower() != root.drive.lower():
+        raise ValueError("operand on another drive")
+    if not operand.anchor and ".." in operand.parts:
+        from . import procs
+        procs.run_command(["git", "-C", str(repo), "rev-parse", "--show-toplevel"], timeout=5)
     anchored = root / operand
     # Resolve the parent to detect junction escapes. The last entry may itself
     # be a tracked link: Git names that entry, not its target.
