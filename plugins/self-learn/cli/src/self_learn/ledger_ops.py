@@ -698,7 +698,7 @@ def create_record(
             checked_path(home, bucket_dir / "meta.yaml")
             checked_path(home, bucket_dir / "pending" / f"{record.id}.md")
         except ValueError as exc:
-            raise OSError(str(exc)) from exc
+            raise LedgerOpsError(str(exc)) from exc
     if record.scope == "project":
         ensure_project_meta(bucket_dir, project_path)
     pending = bucket_dir / "pending"

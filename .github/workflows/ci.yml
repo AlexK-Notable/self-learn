@@ -58,12 +58,6 @@ jobs:
         run: |
           $env:WIN_PD_OVERRIDE_LOCAL_APPDATA = Join-Path $env:RUNNER_TEMP "capture-local"
           $env:WIN_PD_OVERRIDE_APPDATA = Join-Path $env:RUNNER_TEMP "capture-roaming"
-          $report = Join-Path $env:RUNNER_TEMP "capture.xml"
-          uv run --no-sync python -m pytest tests/test_windows_capture.py tests/test_platform_integration.py -p no:cacheprovider -o xfail_strict=true -q -rA --junitxml=$report
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
-          $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
-          $skipped = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
           $expected = @(
             'test_cross_drive_pointer_and_git_rejection'
             'test_foreign_registry_is_readable_and_preserved'
@@ -83,8 +77,21 @@ jobs:
             'test_existing_buckets_roundtrip_without_rekey'
             'test_init_repairs_local_config_before_recovery'
           )
-          if ((Compare-Object $expected $ran) -or $skipped.Count -ne 1 -or $skipped[0].name -cne 'test_linux_teach_never_imports_capabilities' -or $skipped[0].skipped.message -cne 'Linux capture contract') {
-            throw "Unexpected capture selection or skip: $ran"
+          foreach ($version in '3.12', '3.13') {
+            if ($version -eq '3.13') {
+              $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "capture-env-313"
+              uv sync --locked --python $version
+              if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            }
+            $report = Join-Path $env:RUNNER_TEMP "capture-$version.xml"
+            uv run --python $version --no-sync python -m pytest tests/test_windows_capture.py tests/test_platform_integration.py -p no:cacheprovider -o xfail_strict=true -q -rA --junitxml=$report
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $cases = ([xml](Get-Content -Raw $report)).SelectNodes("//testcase")
+            $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
+            $skipped = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
+            if ((Compare-Object $expected $ran) -or $skipped.Count -ne 1 -or $skipped[0].name -cne 'test_linux_teach_never_imports_capabilities' -or $skipped[0].skipped.message -cne 'Linux capture contract') {
+              throw "Unexpected capture selection or skip: $ran"
+            }
           }
 
       - name: Windows names and folders contracts

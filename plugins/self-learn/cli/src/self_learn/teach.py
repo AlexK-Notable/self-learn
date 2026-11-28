@@ -76,7 +76,6 @@ import contextlib
 import json
 import re
 import shlex
-import os
 import sys
 from typing import Any
 
@@ -461,8 +460,6 @@ def record_receipt(home: Path, record_id: str) -> dict:
     """Read the durable record, including its current bucket and status."""
     path = find_record_path(home, record_id)
     record = Record.from_path(path)
-    if os.name == "nt":
-        return {"id": record.id, "path": str(path), "status": None, "scope": record.scope}
     return {"id": record.id, "path": str(path), "status": record.status, "scope": record.scope}
 
 

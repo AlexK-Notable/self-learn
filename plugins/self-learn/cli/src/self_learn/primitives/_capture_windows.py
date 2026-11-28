@@ -34,7 +34,7 @@ def verify_project(home: Path, project: Path) -> None:
     checked_path(home, bucket / "meta.yaml")
     if bucket.exists():
         recorded = bucket_project_path(bucket)
-        if recorded is None or str(recorded) != str(project):
+        if recorded is None or names.registration_key(recorded) != names.registration_key(project):
             raise CapturePathError(f"cannot verify the registered project in {bucket}")
 
 
@@ -49,7 +49,7 @@ def local_registry(data: dict, *, for_write: bool) -> dict:
     foreign_root = foreign(data.get("skills_root"))
     if not foreign_root and local_projects == projects:
         return data
-    if for_write or foreign_root or local_projects != projects:
+    if for_write:
         raise CapturePathError("hosts.yaml contains paths without a local Windows drive or share")
     local = dict(data)
     if foreign_root:
@@ -92,4 +92,4 @@ def status_paths(repo: Path, *, timeout: float):
         raise NotImplementedError("native Windows capture requires Windows")
     from ._names_windows import porcelain_paths
 
-    return porcelain_paths(repo, git_bytes(repo, "status", "--porcelain=v1", "--no-renames", "-z", "-uall", timeout=timeout))
+    return porcelain_paths(repo, git_bytes(repo, "status", "--porcelain=v1", "-z", "-uall", timeout=timeout))
