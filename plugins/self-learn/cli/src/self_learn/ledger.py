@@ -496,10 +496,10 @@ def init_home(path: Path | str) -> InitResult:
         # Step 6: already a repo root — top up per directory (P-C1.14).
         if os.name == "nt":
             with gitops.commit_lock(resolved):
-                if home_state(resolved) == "uninitialized":
-                    _verify_windows_ledger_root(resolved)
                 complete = all((resolved / name).is_dir() for name in _LAYOUT) and _has_head(resolved)
                 repaired = _configure_windows_ledger(resolved, changeset, check_intents=not complete)
+                if home_state(resolved) == "uninitialized":
+                    _verify_windows_ledger_root(resolved)
             if repaired and complete:
                 return InitResult(resolved, False, (), False, True, repaired_config=True)
         missing_before = tuple(name for name in _LAYOUT if not (resolved / name).is_dir())
