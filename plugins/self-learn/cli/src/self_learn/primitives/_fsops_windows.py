@@ -134,8 +134,9 @@ def sync_file_and_parent(path: Path) -> None:
 def _principals():
     with closing(security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)) as token:
         user = security.GetTokenInformation(token, security.TokenUser)[0]
-    return (user, security.CreateWellKnownSid(security.WinLocalSystemSid),
-            security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid))
+    identities = (user, security.CreateWellKnownSid(security.WinLocalSystemSid),
+                  security.CreateWellKnownSid(security.WinBuiltinAdministratorsSid))
+    return tuple({str(sid): sid for sid in identities}.values())
 
 
 def _verify_private(path: Path, principals) -> None:
@@ -197,21 +198,35 @@ def private_temp(parent: Path, *, prefix: str, suffix: str) -> tuple[int, str]:
     return tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=parent)
 
 
+def _file_id(handle) -> tuple[int, int, int]:
+    info = win32file.GetFileInformationByHandle(handle)
+    return info[4], info[8], info[9]  # volume serial, high and low halves of the file index
+
+
+def _remove_owned_temp(path: Path, identity: tuple[int, int, int]) -> None:
+    try:
+        handle = win32file.CreateFile(str(path), win32con.DELETE, _SHARE_ALL, None,
+                                      win32con.OPEN_EXISTING, win32file.FILE_FLAG_OPEN_REPARSE_POINT, None)
+        with closing(handle):
+            if _file_id(handle) == identity:
+                # Delete the entry we inspected even if another process swaps the name.
+                win32file.SetFileInformationByHandle(handle, win32file.FileDispositionInfo, True)
+    except pywintypes.error as exc:
+        if exc.winerror not in (2, 3):
+            raise OSError(0, exc.strerror, str(path), exc.winerror) from exc
+
+
 @contextmanager
 def reopenable_text(text: str, *, prefix: str, suffix: str) -> Iterator[Path]:
     fd, name = tempfile.mkstemp(prefix=prefix, suffix=suffix)
     path = Path(name)
-    identity = os.fstat(fd)
+    identity = _file_id(msvcrt.get_osfhandle(fd))
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(text.encode("utf-8"))
         yield path
     finally:
-        try:
-            if os.path.samestat(identity, path.lstat()):
-                path.unlink()
-        except FileNotFoundError:
-            pass
+        _remove_owned_temp(path, identity)
 
 
 def open_for_mode(path: Path, kind: Literal["x", "xb", "a"], *,

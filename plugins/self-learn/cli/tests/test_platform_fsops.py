@@ -879,3 +879,36 @@ def test_safe_directory_lists_and_unlinks_by_name(tmp_path):
                 directory.unlink(invalid)
         directory.unlink(victim.name)
     assert list(root.iterdir()) == [] and sibling.read_bytes() == b"keep"
+
+
+@windows
+def test_ordinary_publish_inherits_folder_permissions(tmp_path):
+    import ntsecuritycon
+    import win32security as security
+
+    target, peer = tmp_path / "published", tmp_path / "peer"
+    target.write_bytes(b"old")
+    peer.write_bytes(b"peer")
+
+    def descriptor(path):
+        return security.GetNamedSecurityInfo(str(path), security.SE_FILE_OBJECT,
+                                             security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION)
+
+    def entries(sd):
+        acl = sd.GetSecurityDescriptorDacl()
+        return [(header, mask, str(sid)) for header, mask, sid in
+                (acl.GetAce(i) for i in range(acl.GetAceCount()))]
+
+    original = descriptor(target)
+    acl = security.ACL()
+    acl.AddAccessAllowedAce(security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS,
+                            original.GetSecurityDescriptorOwner())
+    security.SetNamedSecurityInfo(str(target), security.SE_FILE_OBJECT, security.DACL_SECURITY_INFORMATION |
+                                  security.PROTECTED_DACL_SECURITY_INFORMATION, None, None, acl, None)
+    expected = entries(descriptor(peer))
+    assert expected and entries(descriptor(target)) != expected
+    fsops.atomic_write(target, b"ordinary")
+    published = descriptor(target)
+    assert entries(published) == expected
+    assert not published.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
+    assert target.read_bytes() == b"ordinary" and peer.read_bytes() == b"peer"
