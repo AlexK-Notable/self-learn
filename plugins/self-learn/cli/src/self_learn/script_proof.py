@@ -171,7 +171,7 @@ def verify_commit(home: Path, row: dict, raw: bytes, transcript: bytes) -> None:
         if previous.returncode == 0 and any(r.get("id") == row["id"] and (r.get("review") or {}).get("verdict") == "approve" for r in json.loads(previous.stdout)["scripts"]):
             continue
         if os.name == "nt":
-            if all(gitops._git_bytes(home, "cat-file", "blob", f"{commit}:{key}").replace(b"\r\n", b"\n") == data.replace(b"\r\n", b"\n")
+            if all(gitops._git_bytes(home, "cat-file", "blob", f"{commit}:{key}") == data
                    for key, data in objects):
                 return
             continue

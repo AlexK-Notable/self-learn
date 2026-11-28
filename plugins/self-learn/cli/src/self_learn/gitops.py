@@ -233,11 +233,9 @@ def _git(
     why "blocking with a sane timeout" was fiction (audit 2026-07-16)."""
     try:
         if os.name == "nt" and args[:1] in (("push",), ("pull",)):
-            if args[0] == "push":
-                args = (*args, "--dry-run")
             return procs.run_bounded(
                 ["git", "-C", str(repo), *args], timeout=timeout,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "always"},
+                env={**os.environ, "GCM_INTERACTIVE": "never"},
             )
         return procs.run_command(
             ["git", "-C", str(repo), *args],

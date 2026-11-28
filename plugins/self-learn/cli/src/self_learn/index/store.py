@@ -422,7 +422,7 @@ class LessonIndex:
                 report.changed.append(d.id)
             if old != d.text_hash:
                 self.conn.execute("DELETE FROM lessons_fts WHERE id = ?", (d.id,))
-                self.conn.execute("INSERT INTO lessons_fts(id, text) VALUES (?, ?)", (d.id, d.text.encode("ascii", "replace").decode() if __import__("os").name == "nt" else d.text))
+                self.conn.execute("INSERT INTO lessons_fts(id, text) VALUES (?, ?)", (d.id, d.text))
             self.conn.execute(
                 "INSERT INTO lessons(id, bucket_scope, bucket_name, status, text_hash, sessions,"
                 " uuids, supersedes, superseded_by, indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?)"

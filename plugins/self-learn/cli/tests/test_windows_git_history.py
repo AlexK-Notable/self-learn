@@ -138,6 +138,8 @@ def test_windows_literal_status_and_diff(repo):
     assert gitops.dirty_paths(repo, folder) == [new]
     diff = gitops.staged_diff(repo, [repo / folder])
     assert "rename from " in diff and "decoy edit" not in diff
+    assert "decoy edit" in gitops.staged_diff(repo, [sibling])
+    assert gitops.staged_diff(repo, [f"{folder}/unrelated"]) == ""
     assert git(repo, "show", ":" + sibling) == b"decoy edit"
 
 
