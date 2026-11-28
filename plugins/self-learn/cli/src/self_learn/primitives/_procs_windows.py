@@ -989,7 +989,7 @@ def _child_in_a_job(pid) -> bool:
 
 
 def _started(proc, broke_away) -> DetachedChild:
-    return DetachedChild(proc.pid, broke_away, _child_in_a_job(proc.pid))
+    return DetachedChild(proc.pid, broke_away, False)  # break C3
 
 
 @_os_errors()
@@ -1012,7 +1012,7 @@ def spawn_detached(argv, *, cwd=None, env=None, log_path=None) -> DetachedChild:
         if not _in_a_job():
             return _started(launch(_DETACHED_FLAGS), None)
         try:
-            proc = launch(_DETACHED_FLAGS | subprocess.CREATE_BREAKAWAY_FROM_JOB)
+            proc = launch(_DETACHED_FLAGS)  # break C1: no breakaway
         except OSError as exc:
             if getattr(exc, "winerror", None) != winerror.ERROR_ACCESS_DENIED:
                 raise
@@ -1234,7 +1234,7 @@ async def terminate_owned(proc, *, kill_grace: float, wait_after_lost_kill: bool
         try:
             await asyncio.wait_for(proc.wait(), timeout=kill_grace)
         except TimeoutError:
-            if stop_owned(proc, hard=True) or wait_after_lost_kill:
+            if wait_after_lost_kill:  # break C2: no hard stop
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=kill_grace)
                 except TimeoutError:
