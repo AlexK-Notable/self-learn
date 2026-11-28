@@ -24,7 +24,7 @@ jobs:
           echo "SELF_LEARN_HOME=$RUNNER_TEMP/h" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/c" >> "$GITHUB_ENV"
           echo "PYTHONPATH=$GITHUB_WORKSPACE/.github" >> "$GITHUB_ENV"
-      - name: Original assertion in isolation
+      - name: Repaired assertion in isolation
         env:
           TRACE_FILE: ${{ runner.temp }}/single.trace
         run: uv run --no-sync pytest -p diag_2604 -p no:cacheprovider -q tests/test_invocation_sdk.py -k kl4_hang
@@ -34,17 +34,20 @@ jobs:
         if: always()
         env:
           TRACE_FILE: ${{ runner.temp }}/parallel.trace
-        run: uv run --no-sync pytest -p diag_2604 -p no:cacheprovider -q -n 4 tests/test_invocation_sdk.py
+        run: uv run --no-sync pytest -p diag_2604 -p no:cacheprovider -q -n 4 -rA tests/test_invocation_sdk.py
       - if: always()
         run: cat "$RUNNER_TEMP/parallel.trace".*
-      - name: Repeat original assertion with workers sharing a CPU
+      - name: Repeat repaired assertion with workers sharing a CPU
         if: always()
         run: |
           cpu=$(uv run --no-sync python -c 'import os; print(min(os.sched_getaffinity(0)))')
+          failed=0
           for sample in 1 2 3; do
             export TRACE_FILE="$RUNNER_TEMP/pinned-$sample.trace"
             rc=0
             taskset -c "$cpu" uv run --no-sync pytest -p diag_2604 -p no:cacheprovider -q -n 4 --dist each tests/test_invocation_sdk.py -k kl4_hang || rc=$?
             echo "sample=$sample pytest rc=$rc"
             cat "$TRACE_FILE".*
+            if [ "$rc" != 0 ]; then failed=1; fi
           done
+          exit "$failed"
