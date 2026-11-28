@@ -629,8 +629,19 @@ def test_windows_pid_written_only_after_outer_acquisition(tmp_path):
     path = tmp_path / "repo.lock"
     previous = b"previous metadata longer than a pid\n"
     path.write_bytes(previous)
-    with _peer(path, _HOLDER) as owner:
+    holder = """
+        import os
+        with locks.repo_section(path, 0, "host", timeout_error=ValueError):
+            print("HELD")
+            print(os.getpid())
+            assert input() == "release"
+        print("RELEASED")
+    """
+    with _peer(path, holder) as owner:
         owner.expect("HELD")
+        owner_pid = int(owner.lines.get(timeout=8))
+        recorded = f"{owner_pid}\n".encode("ascii")
+        assert path.read_bytes() == recorded
         with pytest.raises(ValueError) as busy:
             with locks.repo_section(path, 0, "host", timeout_error=ValueError):
                 pytest.fail("entered busy section")
@@ -638,11 +649,11 @@ def test_windows_pid_written_only_after_outer_acquisition(tmp_path):
             f"host lock {path} still held after 0s — another self-learn "
             "producer (worker/miner/verb) is wedged mid-host"
         )
-        assert path.read_bytes() == previous
+        assert path.read_bytes() == recorded
         owner.send("release")
         owner.expect("RELEASED")
     with locks.repo_section(path, 0, "host", timeout_error=ValueError):
-        assert locks.held_here(path)
+        assert locks.held_here(path) and str(path) in locks._held_locks
         assert path.read_bytes() == f"{os.getpid()}\n".encode("ascii")
         path.write_bytes(b"nested control")
         with locks.repo_section(path, 0, "host", timeout_error=ValueError):
