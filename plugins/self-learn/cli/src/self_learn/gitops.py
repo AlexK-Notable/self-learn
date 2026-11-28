@@ -311,7 +311,9 @@ def stage(repo: Path, paths: Iterable[Path | str]) -> list[Path]:
     ``-A``. Vanished paths (deletions pre-staged by git mv/rm, or
     untracked-and-gone) are skipped. Returns what was actually staged."""
     if os.name == "nt":
-        paths = [repo / names.git_arg(repo, path) for path in paths]
+        from .primitives._capture_windows import git_operand
+
+        paths = [repo / git_operand(repo, path) for path in paths]
     existing = [Path(p) for p in paths if Path(p).exists()]
     if existing:
         _git_ok(repo, "add", "--", *[names.git_arg(repo, p) for p in existing])
@@ -581,7 +583,9 @@ def known_paths(repo: Path, paths: Iterable[Path | str]) -> list[str]:
     path makes git fail the whole commit ("did not match any file(s) known
     to git"), so unknown paths are dropped rather than passed through."""
     if os.name == "nt":
-        paths = [repo / names.git_arg(repo, path) for path in paths]
+        from .primitives._capture_windows import git_operand
+
+        paths = [repo / git_operand(repo, path) for path in paths]
     out: list[str] = []
     for raw in paths:
         p = Path(raw)

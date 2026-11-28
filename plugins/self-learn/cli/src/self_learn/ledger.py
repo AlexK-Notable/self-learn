@@ -205,6 +205,8 @@ class InitResult:
     added_dirs: tuple[str, ...]  # `_LAYOUT` dirs newly created (any step)
     made_head: bool  # an `--allow-empty` commit was made
     already_complete: bool  # step 6, nothing missing, HEAD already existed
+    if os.name == "nt":
+        repaired_config: bool = False
 
 
 def _is_empty_dir(path: Path) -> bool:
@@ -288,14 +290,17 @@ def _create_layout(target: Path) -> tuple[str, ...]:
     return tuple(created)
 
 
-def _configure_windows_ledger(root: Path) -> None:
+def _configure_windows_ledger(root: Path) -> bool:
+    try:
+        return _check_and_configure_windows_ledger(root)
+    except (gitops.GitOpsError, OSError, ValueError) as exc:
+        raise InitError(f"cannot configure the ledger at {root}: {exc}") from exc
+
+
+def _check_and_configure_windows_ledger(root: Path) -> bool:
     """Called under the commit lock and before recovery can compare bytes."""
     from .primitives._capture_windows import git_bytes
 
-    for key, value in (("core.autocrlf", "false"), ("core.longpaths", "true")):
-        current = gitops._git(root, "config", "--local", "--get", key)
-        if current.returncode or current.stdout.strip() != value:
-            gitops._git_ok(root, "config", "--local", key, value)
     entries = git_bytes(root, "ls-files", "--eol", "-z", timeout=gitops.GIT_LOCAL_TIMEOUT)
     # Include prospective paths: an empty ledger can already carry a *.md
     # eol rule, before it has a record for ls-files --eol to describe.
@@ -311,13 +316,27 @@ def _configure_windows_ledger(root: Path) -> None:
             if b"eol=crlf" in attribute or (index == b"i/lf" and worktree in (b"w/crlf", b"w/mixed")):
                 raise InitError(f"{rel}: Git attributes or working bytes conflict with ledger LF storage")
 
-    attrs = git_bytes(root, "check-attr", "--stdin", "-z", "eol", "filter", "working-tree-encoding",
+    attrs = git_bytes(root, "check-attr", "--stdin", "-z", "text", "eol", "filter", "working-tree-encoding",
                       "ident", timeout=gitops.GIT_LOCAL_TIMEOUT, data=b"\0".join(paths) + b"\0")
     fields = iter(attrs.removesuffix(b"\0").split(b"\0"))
     for path, key, value in zip(fields, fields, fields, strict=True):
+        if key == b"text" and value in (b"set", b"auto"):
+            continue  # core.eol=lf below keeps text checkouts byte-stable.
         if value not in (b"unspecified", b"unset") and (key != b"eol" or value != b"lf"):
             raise InitError(f"{path.decode('utf-8')}: conflicting Git attribute "
                             f"{key.decode()}={value.decode('utf-8', errors='replace')}")
+
+    settings = (("core.autocrlf", "false"), ("core.longpaths", "true"), ("core.eol", "lf"))
+    changes = []
+    for key, value in settings:
+        current = gitops._git(root, "config", "--local", "--get", key)
+        if current.returncode not in (0, 1):
+            raise InitError(f"cannot read {key}: {current.stderr.strip()}")
+        if current.returncode or current.stdout.strip() != value:
+            changes.append((key, value))
+    for key, value in changes:
+        gitops._git_ok(root, "config", "--local", key, value)
+    return bool(changes)
 
 
 def init_home(path: Path | str) -> InitResult:
@@ -362,8 +381,11 @@ def init_home(path: Path | str) -> InitResult:
         from .primitives._capture_windows import checked_path
 
         try:
-            for name in (*_LAYOUT, ".git"):
-                checked_path(target, target / name)
+            for name in _LAYOUT:
+                directory = checked_path(target, target / name)
+                if directory.exists() and not directory.is_dir():
+                    raise InitError(f"ledger directory is occupied by a file: {directory}")
+            checked_path(target, target / ".git")
         except ValueError as exc:
             raise InitError(str(exc)) from exc
     # Step 2 (P-C1.24): lexists, not exists — a dangling symlink answers
@@ -431,8 +453,16 @@ def init_home(path: Path | str) -> InitResult:
 
     # Step 6: already a repo root — top up per directory (P-C1.14).
     if os.name == "nt":
+        if not any((resolved / name).is_dir() for name in _BOOTSTRAP_EVIDENCE):
+            # A fresh clone of a ledger can have no materialized empty directories.
+            history = gitops._git(resolved, "log", "-1", "--fixed-strings",
+                                  f"--grep={INIT_COMMIT_SUBJECT}", "--format=%s")
+            if history.returncode or history.stdout.strip() != INIT_COMMIT_SUBJECT:
+                raise InitError(f"{resolved} has no self-learn ledger layout or initialization commit")
         with gitops.commit_lock(resolved):
-            _configure_windows_ledger(resolved)
+            repaired = _configure_windows_ledger(resolved)
+        if repaired and all((resolved / name).is_dir() for name in _LAYOUT) and _has_head(resolved):
+            return InitResult(resolved, False, (), False, True, repaired_config=True)
     missing_before = tuple(name for name in _LAYOUT if not (resolved / name).is_dir())
     had_head_before = _has_head(resolved)
     if not missing_before and had_head_before:

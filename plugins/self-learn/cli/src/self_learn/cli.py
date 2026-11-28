@@ -1621,6 +1621,9 @@ def _cmd_init() -> int:
     except InitError as exc:
         print(f"self-learn init: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    if os.name == "nt" and result.repaired_config:
+        print(f"self-learn init: repaired local Git configuration at {result.path}")
+        return 0
     if result.already_complete:
         print(f"self-learn init: {result.path} already complete — nothing to do")
     elif result.created_repo:
@@ -4555,9 +4558,18 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
     ``counts_are_lower_bound`` on anything other than ``"ok"``); every
     other caller may still ignore it, unchanged."""
     try:
-        flush_report = telemetry.flush(
-            home if home is not None else resolve_home(), push=not no_push
-        )
+        if os.name == "nt":
+            try:
+                flush_report = telemetry.flush(
+                    home if home is not None else resolve_home(), push=not no_push
+                )
+            except telemetry.TelemetryError as exc:
+                print(f"self-learn: telemetry flush refused: {exc}", file=sys.stderr)
+                return "refused"
+        else:
+            flush_report = telemetry.flush(
+                home if home is not None else resolve_home(), push=not no_push
+            )
     except telemetry.ScanRefusal as exc:
         print(f"self-learn: telemetry flush refused: {exc}", file=sys.stderr)
         return "refused"
@@ -5265,6 +5277,10 @@ def _netted_main(argv: list[str] | None = None) -> int:
             "`self-learn status`.",
             file=sys.stderr,
         )
+        if os.name == "nt":
+            from .primitives.capabilities import hint
+
+            sys.stderr.write(hint("reconcile", "status"))
         return EXIT_GIT_FAILED
 
 

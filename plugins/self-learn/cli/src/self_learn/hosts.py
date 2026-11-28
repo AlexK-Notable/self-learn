@@ -2190,8 +2190,12 @@ def capture_host_path(home: Path | str, path: Path | str) -> Path:
         if os.name == "nt":
             from .primitives._capture_windows import git_bytes
 
-            listing_bytes = git_bytes(target, "worktree", "list", "--porcelain", "-z", timeout=gitops.GIT_LOCAL_TIMEOUT)
-            first = listing_bytes.split(b"\0", 1)[0].decode("utf-8")
+            try:
+                listing_bytes = git_bytes(target, "worktree", "list", "--porcelain", "-z",
+                                          timeout=gitops.GIT_LOCAL_TIMEOUT)
+                first = listing_bytes.split(b"\0", 1)[0].decode("utf-8")
+            except (gitops.GitOpsError, UnicodeDecodeError):
+                return original
             if first.startswith("worktree "):
                 main = Path(first.removeprefix("worktree "))
                 if is_project_host(hosts, main):

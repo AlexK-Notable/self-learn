@@ -49,6 +49,19 @@ TEACH_OPTIONS = {
 }
 
 
+def _available(form: str) -> bool:
+    return form in REQUIRES and all(AVAILABLE[cap] for cap in REQUIRES[form])
+
+
+def hint(*forms: str) -> str:
+    """A printable addendum for suggested commands this profile cannot run."""
+    unavailable = [f"self-learn {form}" for form in forms if not _available(form)]
+    if not unavailable:
+        return ""
+    noun = "is" if len(unavailable) == 1 else "are"
+    return f"{' and '.join(unavailable)} {noun} not available on Windows yet.\n"
+
+
 def refused(args: Namespace) -> str | None:
     verb = "--selftest" if args.selftest else args.command
     if verb is None:
@@ -66,6 +79,6 @@ def refused(args: Namespace) -> str | None:
         if args.dest == "hook":
             forms.append("teach --hook-input")
     for form in forms:
-        if form not in REQUIRES or any(not AVAILABLE[cap] for cap in REQUIRES[form]):
+        if not _available(form):
             return verb
     return None

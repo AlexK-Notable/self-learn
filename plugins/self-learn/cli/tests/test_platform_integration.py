@@ -296,17 +296,23 @@ def test_existing_buckets_roundtrip_without_rekey(home, tmp_path):
 
 
 @windows
-def test_init_repairs_local_config_before_recovery(home, tmp_path):
+def test_init_repairs_local_config_before_recovery(home, tmp_path, capsys):
+    from self_learn import cli
+
     for key, value in (("core.autocrlf", b"false"), ("core.longpaths", b"true")):
         assert git(home, "config", "--local", "--get", key).strip() == value
     git(home, "config", "--unset", "core.longpaths")
     git(home, "config", "core.autocrlf", "true")
-    assert ledger.init_home(home).already_complete
+    git(home, "config", "core.eol", "crlf")
+    (home / ".gitattributes").write_bytes(b"* text=auto\n")
+    assert cli.main(["init"]) == 0
+    assert "repaired local Git configuration" in capsys.readouterr().out
+    assert git(home, "config", "--local", "--get", "core.eol").strip() == b"lf"
     assert git(home, "config", "--local", "--get", "core.longpaths").strip() == b"true"
     assert git(home, "config", "--local", "--get", "core.autocrlf").strip() == b"false"
     path = home / "test.txt"
     path.write_bytes(b"ledger LF\n")
-    git(home, "add", "--", path.name)
+    git(home, "add", "--", path.name, ".gitattributes")
     git(home, "commit", "-m", "LF control")
     fresh = tmp_path / "fresh"
     git(home, "worktree", "add", "--detach", str(fresh))
@@ -318,8 +324,21 @@ def test_init_repairs_local_config_before_recovery(home, tmp_path):
     assert path.read_bytes() == b"ledger LF\r\n"
     path.write_bytes(b"ledger LF\n")
     (home / ".gitattributes").write_bytes(b"*.md text eol=crlf\n")
+    git(home, "config", "core.autocrlf", "true")
+    config = home / ".git" / "config"
+    original = config.read_bytes()
     with pytest.raises(ledger.InitError, match="conflicting Git attribute"):
         ledger.init_home(home)
+    assert config.read_bytes() == original
+    foreign = tmp_path / "unrelated"
+    foreign.mkdir()
+    git(foreign, "init")
+    git(foreign, "commit", "--allow-empty", "-m", "unrelated")
+    foreign_config = foreign / ".git" / "config"
+    original = foreign_config.read_bytes()
+    with pytest.raises(ledger.InitError, match="ledger layout"):
+        ledger.init_home(foreign)
+    assert foreign_config.read_bytes() == original
 
 
 @windows
@@ -332,7 +351,7 @@ def test_cross_drive_pointer_and_git_rejection(home, monkeypatch):
     assert gitops.stage(home, [local.name]) == [local]
     calls = []
     monkeypatch.setattr(gitops, "_git", lambda *args, **kwargs: calls.append(args))
-    with pytest.raises(ValueError):
+    with pytest.raises(gitops.GitOpsError):
         gitops.stage(home, [target])
     assert calls == []
 
@@ -388,19 +407,221 @@ def test_registration_reads_registry_under_shared_lock(home, tmp_path, monkeypat
 
 
 @windows
-def test_flagged_spool_refuses_unverified_quarantine(home, monkeypatch, capsys):
-    from self_learn import cli
+def test_flagged_spool_uses_verified_private_quarantine(home, monkeypatch, capsys):
     from types import SimpleNamespace
+    import win32security
+    from self_learn import cli
 
     spool = telemetry.spool_event("offer-made", witness="synthetic-marker")
+    flagged = spool.read_bytes()
+    # Blank and malformed physical lines precede the hit.
+    spool.write_bytes(b"\n\xff\n" + flagged)
     telemetry.spool_event("offer-made", witness="clean sibling")
-    before = spool.read_bytes()
-    head = git(home, "rev-parse", "HEAD")
+    original = spool.read_bytes()
+    private = telemetry.rejected_dir()
+    assert private == names.cache_root() / "private"
+    private.mkdir()
+    (private / "guard").write_bytes(b"ordinary existing directory")
     monkeypatch.setattr(telemetry, "secret_scan", lambda line: (
-        [SimpleNamespace(rule="synthetic test")] if "synthetic-marker" in line else []))
+        [SimpleNamespace(rule="synthetic-rule")] if "synthetic-marker" in line else []))
     assert cli._flush_spool_best_effort(home, no_push=True) == "refused"
-    diagnostic = capsys.readouterr().err
-    assert str(spool) in diagnostic and "synthetic-marker" not in diagnostic
-    assert not telemetry.rejected_dir().exists()
-    assert spool.read_bytes() == before and git(home, "rev-parse", "HEAD") == head
-    assert not (home / "telemetry" / spool.name).exists()
+    err = capsys.readouterr().err
+    assert spool.name + ":3: synthetic-rule" in err and "synthetic-marker" not in err
+    assert spool.read_bytes() == original and list(private.iterdir()) == [private / "guard"]
+    (private / "guard").unlink()
+    private.rmdir()
+    report = telemetry.flush(home, push=False)
+    err = capsys.readouterr().err
+    assert report.events == 1 and report.rejected == [spool.name + ":3: synthetic-rule"]
+    saved, = private.iterdir()
+    assert str(saved) in err and report.rejected[0] in err and "synthetic-marker" not in err
+    assert saved.read_bytes() == flagged and spool.read_bytes() == b""
+    acl = win32security.GetFileSecurity(str(saved), win32security.DACL_SECURITY_INFORMATION).GetSecurityDescriptorDacl()
+    allowed = {str(acl.GetAce(i)[2]) for i in range(acl.GetAceCount())}
+    import win32api
+    import win32con
+    with win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY) as token:
+        owner = str(win32security.GetTokenInformation(token, win32security.TokenUser)[0])
+    assert allowed == {owner, "S-1-5-18", "S-1-5-32-544"}
+    blob = git(home, "show", "HEAD:telemetry/" + spool.name)
+    assert json.loads(blob)["witness"] == "clean sibling"
+    assert telemetry.flush(home, push=False).events == 0
+
+
+@windows
+@pytest.mark.parametrize("junction", ["cache", "spool"])
+def test_committed_receipt_survives_cache_junction(home, tmp_path, junction):
+    import _winapi
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    guard = outside / "guard"
+    guard.write_bytes(b"untouched")
+    target = names.cache_root() if junction == "cache" else telemetry.spool_dir()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _winapi.CreateJunction(str(outside), str(target))
+    assert target.is_junction() and target.samefile(outside)
+    result = subprocess.run([sys.executable, "-m", "self_learn.cli", "teach", "--user",
+                             "--no-push", "--json", "--fact", "committed exactly once"],
+                            capture_output=True, timeout=40)
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+    path, = (home / "user" / "pending").glob("*.md")
+    assert path == Path(receipt["path"]) and path.stem == receipt["id"]
+    assert git(home, "show", "HEAD:" + path.relative_to(home).as_posix()) == path.read_bytes()
+    assert git(home, "log", "--format=%s", "--grep=^self-learn: capture ").count(b"capture ") == 1
+    assert b"telemetry spool failed" in result.stderr and b"telemetry flush refused" in result.stderr
+    assert list(outside.iterdir()) == [guard] and guard.read_bytes() == b"untouched"
+
+
+@windows
+def test_flush_preflights_all_targets(home, tmp_path, monkeypatch):
+    import _winapi
+    first = telemetry.spool_event("offer-made", sequence=1)
+    monkeypatch.setenv("SELF_LEARN_ACTOR", "z-last")
+    last = telemetry.spool_event("offer-made", sequence=2)
+    assert first.name < last.name
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    bad = home / "telemetry" / last.name
+    _winapi.CreateJunction(str(outside), str(bad))
+    before = [first.read_bytes(), last.read_bytes(), git(home, "rev-parse", "HEAD")]
+    with pytest.raises(telemetry.TelemetryError):
+        telemetry.flush(home, push=False)
+    assert before == [first.read_bytes(), last.read_bytes(), git(home, "rev-parse", "HEAD")]
+    assert not (bad.parent / first.name).exists() and list(outside.iterdir()) == []
+    bad.rmdir()
+    assert telemetry.flush(home, push=False).events == 2
+
+
+@windows
+@pytest.mark.parametrize("behind", [False, True], ids=["fast-forward", "remote-moved"])
+def test_plain_teach_pushes_to_local_remote(home, tmp_path, monkeypatch, capsys, behind):
+    from self_learn import cli
+
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "--bare", str(remote))
+    branch = git(home, "branch", "--show-current").decode().strip()
+    dirty = home / "unrelated.txt"
+    dirty.write_bytes(b"clean original\n")
+    git(home, "add", "--", dirty.name)
+    git(home, "commit", "-m", "base")
+    git(home, "remote", "add", "origin", str(remote))
+    git(home, "push", "-u", "origin", branch)
+    upstream = git(remote, "rev-parse", branch)
+    if behind:
+        peer = tmp_path / "peer"
+        git(tmp_path, "clone", "-b", branch, str(remote), str(peer))
+        (peer / "peer.txt").write_bytes(b"independent remote change\n")
+        git(peer, "add", "--", "peer.txt")
+        git(peer, "commit", "-m", "peer advanced")
+        git(peer, "push")
+        assert git(remote, "rev-parse", branch) != upstream
+    dirty.write_bytes(b"local dirty content\n")
+    calls = []
+    original_git = gitops._git
+
+    def observe(repo, *args, **kwargs):
+        result = original_git(repo, *args, **kwargs)
+        if args[0] in ("push", "pull"):
+            calls.append((args, result.returncode))
+        return result
+
+    monkeypatch.setattr(gitops, "_git", observe)
+    assert cli.main(["teach", "--user", "--json", "--fact", "native push witness"]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    path = Path(receipt["path"])
+    assert path.read_bytes() == git(remote, "show", branch + ":" + path.relative_to(home).as_posix())
+    assert git(home, "rev-parse", "HEAD") == git(remote, "rev-parse", branch)
+    assert dirty.read_bytes() == b"local dirty content\n"
+    assert git(home, "status", "--porcelain", "-z") == b" M unrelated.txt\0"
+    assert calls[0][0] == ("push", "-q") and (calls[0][1] != 0) == behind
+    assert [(args, rc) for args, rc in calls if args[0] == "pull"] == (
+        [(("pull", "--rebase", "--autostash", "-q"), 0)] if behind else [])
+    if behind:
+        assert (home / "peer.txt").read_bytes() == b"independent remote change\n"
+
+
+@windows
+def test_windows_git_error_contracts(home, tmp_path, monkeypatch):
+    from self_learn.primitives import _capture_windows as native
+
+    with pytest.raises(gitops.GitOpsError):
+        gitops._git(home, "add", "--", str(tmp_path / "outside"))
+    assert native.git_argv(home, ("commit", "-m", "--", "-m", "check-ignore", "--", "literal[1]")) == [
+        "git.exe", "-C", str(home), "--literal-pathspecs", "commit", "-m", "--", "-m", "check-ignore",
+        "--", "literal[1]"]
+    with monkeypatch.context() as m:
+        def timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        m.setattr(native.procs, "run_bounded", timeout)
+        with pytest.raises(gitops.GitOpsError, match="exceeded"):
+            native.git_bytes(home, "status", timeout=1)
+        with pytest.raises(ledger.InitError, match="exceeded"):
+            ledger._configure_windows_ledger(home)
+    host = tmp_path / "main"
+    host.mkdir()
+    git(host, "init")
+    git(host, "commit", "--allow-empty", "-m", "main")
+    linked = tmp_path / "linked"
+    git(host, "worktree", "add", "-b", "linked", str(linked))
+    hosts.host_add(home, host, "project")
+    assert hosts.capture_host_path(home, linked) == host
+    def unavailable(*args, **kwargs):
+        raise gitops.GitOpsError("worktree enumeration unavailable")
+    monkeypatch.setattr(native, "git_bytes", unavailable)
+    assert hosts.capture_host_path(home, linked) == linked
+
+
+@windows
+def test_first_capture_heals_missing_project_meta(home, tmp_path, monkeypatch, capsys):
+    from self_learn import cli
+    project = tmp_path / "project"
+    project.mkdir()
+    hosts.host_add(home, project, "project", mode="plain")
+    monkeypatch.chdir(project)
+    bucket = home / "projects" / hosts.slug_for(project)
+    bucket.mkdir()
+    assert not list(bucket.iterdir())
+    assert cli.main(["teach", "--project", "--no-push", "--json", "--fact", "recover first capture"]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    from self_learn import ledger_ops
+    assert ledger_ops.bucket_project_path(bucket) == project
+    assert Path(receipt["path"]).parents[1] == bucket
+    assert git(home, "show", "HEAD:" + (bucket / "meta.yaml").relative_to(home).as_posix()) == (bucket / "meta.yaml").read_bytes()
+
+
+@windows
+def test_repair_hints_follow_capabilities_and_statement_captures(home, tmp_path, monkeypatch, capsys):
+    from self_learn import cli, statements, teach
+    from self_learn.primitives import capabilities
+    source = tmp_path / "sessions"
+    project = source / "test-project"
+    project.mkdir(parents=True)
+    row = {"type": "user", "message": {"content": "Keep it small."}}
+    (project / "synthetic-stmt.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    (home / "config.yaml").write_text("refs:\n  transcript_roots: " + json.dumps(str(source)) + "\n", encoding="utf-8")
+    assert cli.main(["teach", "--user", "--fact", "small changes", "--no-push",
+                     "--session", "synthetic-stmt", "--statement", "Keep it small."]) == 0
+    item, = statements.list_statements(home)
+    assert item["source"]["message_ref"] == "transcript:synthetic-stmt#L1"
+    assert b"Keep it small." in git(home, "show", "HEAD:user-statements.jsonl")
+    assert len(list((home / "user" / "pending").glob("*.md"))) == 1
+    capsys.readouterr()
+    assert "not available on Windows yet" in teach._statement_retry_hint("words", "ref")
+    with monkeypatch.context() as m:
+        m.setattr(cli, "_main", lambda *args: (_ for _ in ()).throw(gitops.GitOpsError("test")))
+        assert cli._netted_main([]) == cli.EXIT_GIT_FAILED
+        assert "self-learn reconcile and self-learn status are not available" in capsys.readouterr().err
+    intent = intents.intents_dir(home) / "broken.json"
+    intent.parent.mkdir(exist_ok=True)
+    intent.write_bytes(b'{"id":"broken","steps":null}')
+    with pytest.raises(intents.LedgerStoppedError, match="self-learn reconcile is not available"):
+        with intents.ledger_write(home):
+            pytest.fail("a malformed intent must stop the writer")
+    monkeypatch.setitem(capabilities.AVAILABLE, "ledger", True)
+    assert "not available" not in teach._statement_retry_hint("words", "ref")
+    with pytest.raises(intents.LedgerStoppedError) as stopped:
+        with intents.ledger_write(home):
+            pytest.fail("the malformed intent still exists")
+    assert "not available" not in str(stopped.value)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from . import names, procs
@@ -32,7 +34,7 @@ def verify_project(home: Path, project: Path) -> None:
 
     bucket = home / "projects" / names.project_slug(project)
     checked_path(home, bucket / "meta.yaml")
-    if bucket.exists():
+    if (bucket / "meta.yaml").exists():
         recorded = bucket_project_path(bucket)
         if recorded is None or names.registration_key(recorded) != names.registration_key(project):
             raise CapturePathError(f"cannot verify the registered project in {bucket}")
@@ -62,29 +64,58 @@ def local_registry(data: dict, *, for_write: bool) -> dict:
 def git_bytes(repo: Path, *args: str, timeout: float, data: bytes | None = None) -> bytes:
     from ..gitops import GitOpsError
 
-    proc = procs.run_bounded(["git.exe", "-C", str(repo), *args], binary=True, timeout=timeout, input=data)
+    try:
+        proc = procs.run_bounded(["git.exe", "-C", str(repo), *args], binary=True, timeout=timeout, input=data)
+    except subprocess.TimeoutExpired as exc:
+        raise GitOpsError(f"git {args[0]} in {repo} exceeded {timeout:g}s and was killed") from exc
+    except OSError as exc:
+        raise GitOpsError(f"git {args[0]} in {repo}: {exc}") from exc
     if proc.returncode:
         raise GitOpsError(proc.stderr.decode("utf-8", errors="replace").strip())
     return proc.stdout
 
 
+def git_operand(repo: Path, path: Path | str) -> str:
+    from ..gitops import GitOpsError
+
+    try:
+        return names.git_arg(repo, path)
+    except (ValueError, OSError) as exc:
+        raise GitOpsError(f"invalid Git path {str(path)!r} in {repo}: {exc}") from exc
+
+
+@lru_cache(maxsize=None)
+def provision_quarantine(directory: Path) -> None:
+    from . import fsops
+
+    fsops.ensure_private_parent(directory)
+
+
 def git_argv(repo: Path, args: tuple[str, ...]) -> list[str]:
     """The capture callers pass file operands after --. check-ignore uses plain names."""
     argv = ["git.exe", "-C", str(repo)]
-    if "--" not in args:
+    # Skip the global switches and option arguments used by capture. A
+    # commit subject/body can literally be "--" or "check-ignore".
+    index = 0
+    while index < len(args) and args[index] in ("-c", "--literal-pathspecs"):
+        index += 2 if args[index] == "-c" else 1
+    command = args[index] if index < len(args) else None
+    split = index + 1
+    while split < len(args) and args[split] != "--":
+        split += 2 if args[split] in ("-m", "--message") else 1
+    if split >= len(args):
         return [*argv, *args]
-    split = args.index("--")
-    if "check-ignore" in args[:split]:
+    if command == "check-ignore":
         # The excludes probe can ask about a synthetic name ending in a
         # space. Validate its local path first, then restore those spaces.
         plain = []
         for operand in args[split + 1:]:
             name = operand.rstrip(" ")
-            plain.append(names.git_arg(repo, name) + operand[len(name):])
+            plain.append(git_operand(repo, name) + operand[len(name):])
         return [*argv, *args[:split + 1], *plain]
     if "--literal-pathspecs" not in args[:split]:
         argv.append("--literal-pathspecs")
-    return [*argv, *args[:split + 1], *(names.git_arg(repo, path) for path in args[split + 1:])]
+    return [*argv, *args[:split + 1], *(git_operand(repo, path) for path in args[split + 1:])]
 
 
 def status_paths(repo: Path, *, timeout: float):

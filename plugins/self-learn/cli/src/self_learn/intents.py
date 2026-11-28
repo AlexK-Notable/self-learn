@@ -636,9 +636,13 @@ def recover(home: Path | str) -> RecoverResult:
                 if os.name == "nt":
                     from .primitives._capture_windows import checked_path
 
+                    if not isinstance(data, dict) or not isinstance(data.get("steps"), list):
+                        raise ValueError("intent must contain a list of steps")
                     if data["id"] != f.stem:
                         raise ValueError("intent id differs from its filename")
                     for step in data["steps"]:
+                        if not isinstance(step, dict) or not isinstance(step.get("path"), str):
+                            raise ValueError("intent step must contain a path string")
                         relative = Path(step["path"])
                         if relative.anchor or any(part.lower() == ".git" for part in relative.parts):
                             raise ValueError("invalid ledger-relative intent step")
@@ -735,6 +739,11 @@ class LedgerStoppedError(gitops.GitOpsError):
                 f"--clear-intent {d.id}' to accept its current on-disk state, or "
                 f"delete <home>/.intents/{d.id}.json by hand."
             )
+        if os.name == "nt" and result.stopped_detail:
+            from .primitives.capabilities import hint
+
+            if clause := hint("reconcile"):
+                lines.append(clause.rstrip())
         super().__init__("\n".join(lines))
 
 
