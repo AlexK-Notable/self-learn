@@ -23,13 +23,13 @@ import pytest
 
 from self_learn import hosts, miner, session_copies
 from self_learn.ledger import Bucket
-from self_learn.mining import flags, tasks
+from self_learn.mining import discovery, flags, spine, tasks
 from self_learn.primitives import names
 
 windows = pytest.mark.skipif(os.name != "nt", reason="Windows transcript discovery")
 linux = pytest.mark.skipif(os.name == "nt", reason="Linux transcript discovery")
 
-SID = {k: f"{k}0000000-1111-2222-3333-444444444444" for k in "abcdefgh"}
+SID = {k: f"{k}0000000-1111-2222-3333-444444444444" for k in "abcdefghjk"}
 WIDE = "é日本"
 
 
@@ -85,6 +85,34 @@ def junction(target: Path, link: Path) -> None:
     assert link.is_junction()
 
 
+def spy_paths(patch) -> list[Path]:
+    """Record every path a reader lists, examines through a link or opens."""
+    touched: list[Path] = []
+    for name in ("is_dir", "is_file", "glob", "iterdir", "open", "read_bytes"):
+        original = getattr(Path, name)
+
+        def wrapper(self, *args, _original=original, **kwargs):
+            touched.append(Path(self))
+            return _original(self, *args, **kwargs)
+
+        patch.setattr(Path, name, wrapper)
+    return touched
+
+
+def reached(touched: list[Path], linked: Path) -> list[Path]:
+    """The recorded paths at or below ``linked`` (none may be)."""
+    return [t for t in touched if t == linked or linked in t.parents]
+
+
+def shouted(path: Path | str) -> str:
+    """``path`` in upper case with forward slashes: the same place."""
+    return str(path).upper().replace("\\", "/")
+
+
+#: A row text holding U+2028: str.splitlines splits it, transcript_lines does not.
+SEPARATOR = " "
+
+
 # --------------------------------------------------------------- Windows
 
 
@@ -99,7 +127,8 @@ def test_windows_root_follows_claude_root_and_keeps_one_spelling(tree, monkeypat
     assert str(miner.transcripts_root()) == str((config / "projects").resolve())
     # A configured root written in another case or with forward slashes
     # gives the same cursor keys: one spelling, the one on disk.
-    for spelling in (str(tree.projects).upper(), str(tree.projects).replace("\\", "/")):
+    for spelling in (str(tree.projects).upper(), str(tree.projects).replace("\\", "/"),
+                     "\\\\?\\" + str(tree.projects.resolve())):
         monkeypatch.setenv("SELF_LEARN_TRANSCRIPTS_DIR", spelling)
         assert str(miner.transcripts_root()) == str(tree.projects.resolve())
 
@@ -192,28 +221,60 @@ def test_windows_session_copy_follows_no_link(tree):
     write(outside / "agent-z9.jsonl", [row(sid, tree.project, "outside the tree")])
     (real.parent / sid).mkdir()
     junction(outside, real.parent / sid / "subagents")
-    record = _capture(tree, sid, tree.project)
+    with pytest.MonkeyPatch.context() as patch:
+        touched = spy_paths(patch)
+        record = _capture(tree, sid, tree.project)
     assert record is not None and "error" not in record, record
     assert "subagent_files" not in record
+    # the junction is refused before it is examined or listed
+    assert reached(touched, real.parent / sid / "subagents") == []
 
-    # The session's only copy sits in a linked folder: not found.
+    # Positive control, and a linked log beside an ordinary one: only the
+    # ordinary log is copied, and the linked one is never examined.
+    both = SID["j"]
+    top = write(tree.projects / tree.colon / f"{both}.jsonl", [row(both, tree.project)])
+    write(top.parent / both / "subagents" / "agent-a1.jsonl", [row(both, tree.project, "ordinary")])
+    stray = write(tree.tmp / "stray" / "agent.jsonl", [row(both, tree.project, "outside the tree")])
+    (top.parent / both / "subagents" / "agent-z9.jsonl").symlink_to(stray)
+    with pytest.MonkeyPatch.context() as patch:
+        touched = spy_paths(patch)
+        record = _capture(tree, both, tree.project)
+    assert record["subagent_files"] == 1, record
+    assert reached(touched, top.parent / both / "subagents" / "agent-z9.jsonl") == []
+
+    # The session's only copy sits in a linked folder, or is itself a linked
+    # file: not found, and the link is never examined.
     linked = SID["d"]
     elsewhere = tree.tmp / "elsewhere"
     write(elsewhere / f"{linked}.jsonl", [row(linked, tree.project)])
     junction(elsewhere, tree.projects / "linked-folder")
     assert _capture(tree, linked, tree.project)["error"] == "no transcript file found for this session"
+    alias = SID["k"]
+    target = write(tree.tmp / "alias-target" / "t.jsonl", [row(alias, tree.project)])
+    (tree.projects / tree.colon / f"{alias}.jsonl").symlink_to(target)
+    with pytest.MonkeyPatch.context() as patch:
+        touched = spy_paths(patch)
+        record = _capture(tree, alias, tree.project)
+    assert record["error"] == "no transcript file found for this session"
+    assert reached(touched, tree.projects / tree.colon / f"{alias}.jsonl") == []
 
 
 @windows
-def test_windows_project_scope_compares_like_registered_projects(tree):
+def test_windows_project_scope_compares_like_registered_projects(tree, monkeypatch):
     bucket = Bucket(path=tree.tmp / "bucket", scope="project", name=hosts.slug_for(tree.project))
     registered = [tree.project, tree.other]
     text = str(tree.project)
+    deep = tree.project.joinpath(*["d" * 90] * 3)  # past 260 characters, not created
+    assert len(str(deep)) >= 260
     same = [Path(text.lower()), Path(text.upper()), Path(text.replace("\\", "/")), Path(text + "\\"),
-            Path("\\\\?\\" + text), tree.project / "src" / "deep"]
+            Path("\\\\?\\" + text), tree.project / "src" / "deep", deep]
     for cwd in same:
         assert flags._in_scope(bucket, cwd, registered, []), cwd
-    for cwd in (tree.other, Path(text + "-other"), tree.tmp / "work"):
+    # A recorded cwd that is not absolute names no place, even while
+    # self-learn itself stands inside the project.
+    monkeypatch.chdir(tree.project)
+    relative = [Path("."), Path("src"), Path(tree.project.drive + "sub"), Path("\\nonexistent")]
+    for cwd in (tree.other, Path(text + "-other"), tree.tmp / "work", *relative):
         assert not flags._in_scope(bucket, cwd, registered, []), cwd
 
 
@@ -232,8 +293,12 @@ def test_windows_named_and_backfill_sessions_are_chosen_by_content(tree):
 
     # self-learn's own session: its recorded cwd lies under the cache root,
     # whatever folder Claude Code put it in
-    own_cwd = miner.miner_dir().parent.parent / "stage" / "work"
+    own_cwd = shouted(miner.miner_dir().parent.parent / "stage" / "work")
     write(tree.projects / "ordinary-looking" / f"{SID['b']}.jsonl", [row(SID["b"], own_cwd)])
+    # sessions that cannot be placed are not taken for someone else's
+    write(tree.projects / "ordinary-looking" / f"{SID['c']}.jsonl",
+          ['{"type": "user", "sessionId": "%s", "message": {"content": "no cwd"}}' % SID["c"]])
+    write(tree.projects / "ordinary-looking" / f"{SID['d']}.jsonl", [row(SID["d"], ".")])
     found = miner._backfill_slices(tree.home, 1)
     assert sorted(s.session_id for s in found) == [sid]
 
@@ -251,8 +316,10 @@ def test_windows_later_session_search_follows_recorded_working_directory(tree):
     write(tree.projects / "anything" / f"{SID['d']}.jsonl", [row(SID["d"], worktree, words)])
     # an unrelated project, and self-learn's own session
     write(tree.projects / "unrelated" / f"{SID['e']}.jsonl", [row(SID["e"], tree.tmp / "work", words)])
-    own_cwd = miner.miner_dir().parent.parent / "stage"
+    own_cwd = shouted(miner.miner_dir().parent.parent / "stage")
     write(tree.projects / "unrelated" / f"{SID['f']}.jsonl", [row(SID["f"], own_cwd, words)])
+    # a session that cannot be placed (relative cwd) is not searched
+    write(tree.projects / "unrelated" / f"{SID['g']}.jsonl", [row(SID["g"], "src", words)])
 
     item = {"session": SID["a"], "transcript": str(start), "cwd": str(tree.project), "line": 1,
             "entry_ts": _now(-3600), "project_dir": tree.colon}
@@ -266,6 +333,154 @@ def test_windows_later_session_search_follows_recorded_working_directory(tree):
     # every folder: other projects too, but never self-learn's own session
     assert sessions(check.search_later_sessions("T1", words, all_folders=True)) == {
         SID["b"], SID["c"], SID["d"], SID["e"]}
+
+
+ORIGIN_CASES = ["ordinary", "linked-folder", "linked-file", "linked-session-folder",
+                "linked-subagents-folder", "linked-agent-file", "dot-dot"]
+
+
+@windows
+@pytest.mark.parametrize("case", ORIGIN_CASES)
+def test_windows_origin_index_reads_no_linked_log(tree, case):
+    """The landing's origin index streams a copy only to see whether a row
+    holds a separator ``str.splitlines`` would split; every copy reached
+    through a link, or above a project folder, is left unread."""
+    sid = SID["a"]
+    folder = tree.projects / "folder"
+    folder.mkdir()
+    outside = tree.tmp / "outside"
+    odd = [row(sid, tree.project, f"one{SEPARATOR}two")]
+    sub = "subagents/agent-x.jsonl"
+    query: tuple[str, str | None] = (sid, sub)
+    if case == "ordinary":
+        write(folder / f"{sid}.jsonl", odd)
+        write(folder / sid / "subagents" / "agent-x.jsonl", odd)
+        index = miner._OriginIndex(roots=[tree.projects])
+        assert index.affected(sid, None) and index.affected(sid, sub)
+        return
+    if case == "linked-folder":
+        write(outside / f"{sid}.jsonl", odd)
+        junction(outside, tree.projects / "linked")
+        query = (sid, None)
+    elif case == "linked-file":
+        target = write(outside / "t.jsonl", odd)
+        (folder / f"{sid}.jsonl").symlink_to(target)
+        query = (sid, None)
+    elif case == "linked-session-folder":
+        write(outside / "subagents" / "agent-x.jsonl", odd)
+        junction(outside, folder / sid)
+    elif case == "linked-subagents-folder":
+        write(outside / "agent-x.jsonl", odd)
+        (folder / sid).mkdir()
+        junction(outside, folder / sid / "subagents")
+    elif case == "linked-agent-file":
+        target = write(outside / "t.jsonl", odd)
+        (folder / sid / "subagents").mkdir(parents=True)
+        (folder / sid / "subagents" / "agent-x.jsonl").symlink_to(target)
+    elif case == "dot-dot":
+        # an origin naming ``..`` as its session climbs above the folder
+        write(tree.projects / "subagents" / "agent-x.jsonl", odd)
+        query = ("..", sub)
+    index = miner._OriginIndex(roots=[tree.projects])
+    assert all(p.name != "linked" for p in index._projects)
+    assert not index.affected(*query)
+
+
+SPINE_CASES = ["ordinary", "linked-session-folder", "linked-subagents-folder", "linked-agent-file"]
+
+
+@windows
+@pytest.mark.parametrize("case", SPINE_CASES)
+def test_windows_spine_lists_no_linked_subagent_log(tree, case):
+    sid = SID["a"]
+    folder = tree.projects / "folder"
+    path = write(folder / f"{sid}.jsonl", [row(sid, tree.project, "go", kind="user")])
+    outside = tree.tmp / "outside"
+    log = [row(sid, tree.project, "sub", kind="user")]
+    expected = {"ok"}
+    linked = None
+    if case == "ordinary":
+        write(folder / sid / "subagents" / "agent-ok.jsonl", log)
+    elif case == "linked-session-folder":
+        write(outside / "subagents" / "agent-x.jsonl", log)
+        linked = folder / sid
+        junction(outside, linked)
+        expected = set()
+    elif case == "linked-subagents-folder":
+        write(outside / "agent-x.jsonl", log)
+        (folder / sid).mkdir()
+        linked = folder / sid / "subagents"
+        junction(outside, linked)
+        expected = set()
+    elif case == "linked-agent-file":
+        write(folder / sid / "subagents" / "agent-ok.jsonl", log)
+        target = write(outside / "t.jsonl", log)
+        linked = folder / sid / "subagents" / "agent-x.jsonl"
+        linked.symlink_to(target)
+    session = spine.read_session(path)
+    with pytest.MonkeyPatch.context() as patch:
+        touched = spy_paths(patch)
+        ids = set(spine.subagent_launches(session))
+    assert ids == expected
+    if linked is not None:
+        assert reached(touched, linked) == []
+
+
+@windows
+@pytest.mark.parametrize("damage", ["invalid-utf8", "deep-nesting"])
+def test_windows_proof_survives_damaged_rows(tree, damage):
+    """A row that is not UTF-8, or nests past the parser's recursion limit,
+    proves nothing and stops nothing: the next row still proves the file."""
+    sid = SID["a"]
+    good = row(sid, tree.project, "fine").encode("utf-8")
+    if damage == "invalid-utf8":
+        bad = b'{"type": "user", "sessionId": "x", "cwd": "\xff\xfe", "message": {"content": "\xc3"}}'
+    else:
+        bad = ('{"sessionId": "%s", "deep": ' % sid + "[" * 200_000 + "]" * 200_000 + "}").encode("ascii")
+    path = tree.projects / tree.colon / f"{sid}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(bad + b"\n" + good + b"\n")
+    proven, cwd = discovery.read_proof(path)
+    assert proven and cwd == str(tree.project)
+    assert discovery.find_session(tree.projects, sid, tree.project) == path
+    if damage == "deep-nesting":
+        # (the walk itself reads strict UTF-8, on Linux too: a non-UTF-8 file
+        # waits there, unchanged by this lane)
+        [found] = miner.walk()
+        assert found.path == path.resolve()
+
+
+@windows
+def test_windows_later_session_search_reads_unchanged_files_once(tree, monkeypatch):
+    words = "frobnicate the widget"
+    start = write(tree.projects / "f" / f"{SID['a']}.jsonl",
+                  [row(SID["a"], tree.project, "begin", kind="user", ts=_now(-7200))])
+    later = write(tree.projects / "f" / f"{SID['b']}.jsonl", [row(SID["b"], tree.project, words)])
+    write(tree.projects / "g" / f"{SID['c']}.jsonl", [row(SID["c"], tree.other, words)])
+    item = {"session": SID["a"], "transcript": str(start), "cwd": str(tree.project), "line": 1,
+            "entry_ts": _now(-3600), "project_dir": "f"}
+    check = tasks.CheckTools({"T1": item}, tree.projects, None, frozenset(),  # type: ignore[arg-type]
+                             skip_prefix=miner._own_folders_prefix())
+    monkeypatch.setattr(discovery, "_FACTS", {})
+    reads: list[str] = []
+    original = discovery.read_proof
+
+    def counted(path, session_id=None):
+        reads.append(Path(path).name)
+        return original(path, session_id)
+
+    monkeypatch.setattr(discovery, "read_proof", counted)
+    first = check.search_later_sessions("T1", words, all_folders=True)
+    assert f"session {SID['b']}" in first and f"session {SID['c']}" in first
+    assert sorted(reads) == sorted(f"{SID[k]}.jsonl" for k in "abc")
+    reads.clear()
+    check.search_later_sessions("T1", "widget")
+    assert reads == []
+    # a file that changed is read again, and only that one
+    with later.open("ab") as out:
+        out.write((row(SID["b"], tree.project, "more") + "\n").encode("utf-8"))
+    check.search_later_sessions("T1", words)
+    assert reads == [later.name]
 
 
 # ----------------------------------------------------------------- Linux

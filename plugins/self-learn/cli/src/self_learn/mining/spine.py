@@ -219,6 +219,19 @@ def _first_user_text(path: Path) -> str | None:
     return None
 
 
+def _subagent_ids(session: Session, d: Path) -> list[str]:
+    """The ids of the ``agent-*.jsonl`` logs under ``d``, sorted. Windows: a
+    log reached through a linked ``<session>`` or ``subagents`` folder, or
+    itself a link, is not this session's, and the links are checked before
+    anything is listed (discovery.py)."""
+    if os.name == "nt":
+        from . import discovery
+
+        return sorted(p.name[len("agent-") : -len(".jsonl")]
+                      for p in discovery.subagent_files(session.path.parent, session.session_id))
+    return sorted(p.name[len("agent-") : -len(".jsonl")] for p in d.glob("agent-*.jsonl")) if d.is_dir() else []
+
+
 def subagent_launches(session: Session, last_line: int | None = None) -> dict[str, int | None]:
     """``{subagent id: the line of the tool use that launched it}`` for every
     log under ``<session>/subagents/``; None when the launch is not found
@@ -229,13 +242,7 @@ def subagent_launches(session: Session, last_line: int | None = None) -> dict[st
     otherwise by the log's first user text equalling the launch's
     ``input.prompt`` (old spec §5.5, the fallback)."""
     d = session.subagent_dir
-    ids = sorted(p.name[len("agent-") : -len(".jsonl")] for p in d.glob("agent-*.jsonl")) if d.is_dir() else []
-    if os.name == "nt":
-        # Windows: a log reached through a linked `<session>` or `subagents`
-        # folder, or itself a link, is not this session's (discovery.py).
-        from . import discovery
-
-        ids = [i for i in ids if discovery.ordinary_below(session.path.parent, d / f"agent-{i}.jsonl")]
+    ids = _subagent_ids(session, d)
     if not ids:
         return {}
     stop = len(session.entries) if last_line is None else min(last_line, len(session.entries))

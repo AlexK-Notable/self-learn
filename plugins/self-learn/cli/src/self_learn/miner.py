@@ -1300,6 +1300,16 @@ def _windows_ordinary(path: Path) -> bool:
     return discovery.ordinary_below(path.parent, path)
 
 
+def _windows_subagent_paths(projects: Sequence[Path], session: str, subagent: str) -> list[Path]:
+    """Windows only: ``<project>/<session>/<subagent>`` for each project
+    folder where no entry below the folder is a link and no segment is
+    ``.`` or ``..`` (an origin's text names them; mining/discovery.py)."""
+    from .mining import discovery
+
+    return [p / session / subagent for p in projects
+            if discovery.ordinary_below(p, p / session / subagent)]
+
+
 class _OriginIndex:
     """One landing's translation policy for records and tracked/spooled events.
 
@@ -1329,6 +1339,8 @@ class _OriginIndex:
         if key not in self._affected:
             paths = ([p / session / subagent for p in self._projects] if subagent
                      else self._copies.get(session, []))
+            if os.name == "nt" and subagent:
+                paths = _windows_subagent_paths(self._projects, session, subagent)
             differs = False
             for path in paths:
                 try:
@@ -3115,7 +3127,7 @@ def _named_session_paths(root: Path, sid: str) -> Iterable[Path]:
     if os.name == "nt":
         from .mining import discovery
 
-        return [p for p in discovery.session_files(root) if p.stem == sid and discovery.read_proof(p, sid)[0]]
+        return discovery.named_session_files(root, sid)
     return root.glob(f"*/{sid}.jsonl")
 
 

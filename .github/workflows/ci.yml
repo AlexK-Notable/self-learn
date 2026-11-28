@@ -334,6 +334,20 @@ jobs:
             'test_windows_project_scope_compares_like_registered_projects'
             'test_windows_named_and_backfill_sessions_are_chosen_by_content'
             'test_windows_later_session_search_follows_recorded_working_directory'
+            'test_windows_origin_index_reads_no_linked_log[ordinary]'
+            'test_windows_origin_index_reads_no_linked_log[linked-folder]'
+            'test_windows_origin_index_reads_no_linked_log[linked-file]'
+            'test_windows_origin_index_reads_no_linked_log[linked-session-folder]'
+            'test_windows_origin_index_reads_no_linked_log[linked-subagents-folder]'
+            'test_windows_origin_index_reads_no_linked_log[linked-agent-file]'
+            'test_windows_origin_index_reads_no_linked_log[dot-dot]'
+            'test_windows_spine_lists_no_linked_subagent_log[ordinary]'
+            'test_windows_spine_lists_no_linked_subagent_log[linked-session-folder]'
+            'test_windows_spine_lists_no_linked_subagent_log[linked-subagents-folder]'
+            'test_windows_spine_lists_no_linked_subagent_log[linked-agent-file]'
+            'test_windows_proof_survives_damaged_rows[invalid-utf8]'
+            'test_windows_proof_survives_damaged_rows[deep-nesting]'
+            'test_windows_later_session_search_reads_unchanged_files_once'
           )
           $ran = @($cases | Where-Object { !$_.SelectSingleNode("skipped") } | ForEach-Object { $_.name })
           $skips = @($cases | Where-Object { $_.SelectSingleNode("skipped") })
